@@ -337,8 +337,77 @@ _ART_OPENER = urllib.request.build_opener(
 )
 
 
+def _allowed_art_roots():
+    roots = ["/tmp"]
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        roots.append(runtime)
+    roots.append(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"))
+    extra = os.environ.get("WAYBAR_PLAYER_ART_DIRS", "")
+    roots.extend(part for part in extra.split(os.pathsep) if part)
+    resolved = []
+    for root in roots:
+        try:
+            resolved.append(os.path.realpath(os.path.expanduser(root)))
+        except OSError:
+            continue
+    return resolved
+
+
+def _has_image_signature(path):
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(16)
+    except OSError:
+        return False
+    return (
+        head.startswith(b"\x89PNG\r\n\x1a\n")
+        or head.startswith(b"\xff\xd8\xff")
+        or head.startswith((b"GIF87a", b"GIF89a"))
+        or (head[:4] == b"RIFF" and head[8:12] == b"WEBP")
+    )
+
+
+def validate_file_art_url(url):
+    """file:// разрешён только для обычных картинок внутри белого списка."""
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme.lower() != "file":
+        return None
+    if (parts.hostname or "").lower() not in ("", "localhost"):
+        return None
+
+    path = urllib.parse.unquote(parts.path)
+    if not path or not os.path.isabs(path):
+        return None
+    try:
+        real = os.path.realpath(path)
+        st = os.stat(real)
+    except OSError:
+        return None
+    if not os.path.isfile(real) or not (0 < st.st_size <= ART_MAX_BYTES):
+        return None
+    if not any(real.startswith(root + os.sep) for root in _allowed_art_roots()):
+        return None
+    if not _has_image_signature(real):
+        return None
+    return real
+
+
 def fetch_art(url):
-    """Скачивает https-обложку в кэш; file:// и локальные адреса запрещены."""
+    """Скачивает https-обложку или отдаёт проверенный локальный file:// путь."""
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        scheme = urllib.parse.urlsplit(url).scheme.lower()
+    except ValueError:
+        return None
+    if scheme == "file":
+        return validate_file_art_url(url)
     if not validate_art_url(url):
         return None
     try:

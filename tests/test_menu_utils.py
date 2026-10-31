@@ -1,3 +1,9 @@
+import base64
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from helpers import load_module
@@ -60,6 +66,7 @@ def test_to_seconds(raw, expected):
         "http://127.0.0.1/cover.png",
         "http://192.168.1.20/cover.png",
         "file:///tmp/cover.png",
+        "file:///etc/passwd",
         "https://127.0.0.1/cover.png",
         "https://10.0.0.5/cover.png",
         "https://[::1]/cover.png",
@@ -73,3 +80,46 @@ def test_validate_art_url_scheme():
     assert menu.validate_art_url("file:///tmp/cover.png") is False
     assert menu.validate_art_url("http://example.com/cover.png") is False
     assert menu.validate_art_url("") is False
+
+
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nK0AAAAASUVORK5CYII="
+)
+
+
+def _png_in(directory, name="cover.png"):
+    path = Path(directory) / name
+    path.write_bytes(PNG_1X1)
+    return path
+
+
+def test_fetch_art_accepts_image_in_tmp():
+    directory = tempfile.mkdtemp(dir="/tmp")
+    try:
+        path = _png_in(directory)
+        assert menu.fetch_art(path.as_uri()) == str(path.resolve())
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_fetch_art_rejects_symlink_outside_whitelist():
+    inside = tempfile.mkdtemp(dir="/tmp")
+    outside = tempfile.mkdtemp(dir="/var/tmp")
+    try:
+        target = _png_in(outside, "outside.png")
+        link = Path(inside) / "link.png"
+        os.symlink(target, link)
+        assert menu.fetch_art(link.as_uri()) is None
+    finally:
+        shutil.rmtree(inside, ignore_errors=True)
+        shutil.rmtree(outside, ignore_errors=True)
+
+
+def test_fetch_art_rejects_non_image_in_tmp():
+    directory = tempfile.mkdtemp(dir="/tmp")
+    try:
+        path = Path(directory) / "not-image.png"
+        path.write_text("not an image", encoding="utf-8")
+        assert menu.fetch_art(path.as_uri()) is None
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
