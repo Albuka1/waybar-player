@@ -10,8 +10,8 @@ BIN_DIR="$PREFIX/bin"
 SHARE_DIR="$PREFIX/share/waybar-player"
 DOC_DIR="$PREFIX/share/doc/waybar-player"
 
-rm -f "$BIN_DIR/waybar-player-status" "$BIN_DIR/waybar-player-menu"
-rm -f "$SHARE_DIR/player-menu.py" "$SHARE_DIR/i18n.py"
+rm -f "$BIN_DIR/waybar-player-status" "$BIN_DIR/waybar-player-menu" "$BIN_DIR/waybar-player-ctl"
+rm -f "$SHARE_DIR/player-menu.py" "$SHARE_DIR/i18n.py" "$SHARE_DIR/players.py"
 for locale in "$SHARE_DIR"/locales/*.json; do
     if [[ -e $locale ]]; then
         rm -f "$locale"
