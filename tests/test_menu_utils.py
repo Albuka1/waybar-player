@@ -258,16 +258,37 @@ def test_mode_visibility_rechecks_each_session(monkeypatch):
         return None
 
     monkeypatch.setattr(menu, "pctl", fake_pctl)
-    state_a = menu.get_state()
+    state_a = menu.get_state("chromium")
     assert state_a["mode_key"] == "chromium|track-A"
     assert menu.mode_visibility(state_a["shuffle"], state_a["loop"]) == (True, True)
 
     current["track"] = "B"
-    state_b = menu.get_state()
+    state_b = menu.get_state("chromium")
     assert state_b["mode_key"] == "chromium|track-B"
     assert menu.mode_visibility(state_b["shuffle"], state_b["loop"]) == (False, False)
 
     current["track"] = "A"
-    state_a2 = menu.get_state()
+    state_a2 = menu.get_state("chromium")
     assert state_a2["mode_key"] == "chromium|track-A"
     assert menu.mode_visibility(state_a2["shuffle"], state_a2["loop"]) == (True, True)
+
+
+def test_loop_support_queries_only_selected_player(monkeypatch):
+    calls = []
+
+    def fake_pctl(*args, player=None, **_kwargs):
+        calls.append((player, args[0]))
+        if args[0] == "metadata":
+            fields = [
+                "Playing", player, "Title", "Artist", "Album", "",
+                "0.5", "0", "100", "track-A", "https://example/A",
+            ]
+            return subprocess.CompletedProcess(args, 0, menu.SEP.join(fields) + "\n", "")
+        return subprocess.CompletedProcess(args, 1, "", "No player could handle this command")
+
+    monkeypatch.setattr(menu, "pctl", fake_pctl)
+    state = menu.get_state("A")
+    assert state["loop"] is None
+    assert menu.mode_visibility(state["shuffle"], state["loop"]) == (False, False)
+    assert calls
+    assert all(player == "A" for player, _command in calls)

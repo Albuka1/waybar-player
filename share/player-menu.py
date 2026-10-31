@@ -19,6 +19,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from i18n import t  # noqa: E402
+import players  # noqa: E402
 
 import gi
 
@@ -211,11 +212,13 @@ scale:disabled trough slider {
 """
 
 
-def pctl(*args, timeout=PLAYERCTL_TIMEOUT):
-    """playerctl с жёстким таймаутом; None — плеер не ответил."""
+def pctl(*args, player=None, timeout=PLAYERCTL_TIMEOUT):
+    """playerctl с жёстким таймаутом и обязательным -p."""
+    if not player:
+        return None
     try:
         return subprocess.run(
-            ["playerctl", *args],
+            ["playerctl", "-p", player, *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -264,8 +267,10 @@ def volume_icon(pct):
     return "󰕾"
 
 
-def get_state():
-    res = pctl("metadata", "--format", FMT)
+def get_state(player):
+    if not player:
+        return None
+    res = pctl("metadata", "--format", FMT, player=player)
     if res is None or res.returncode != 0:
         return None
     line = res.stdout.rstrip("\n")
@@ -297,8 +302,8 @@ def get_state():
         "volume": volume,
         "position": to_seconds(pos_raw) or 0.0,
         "length": length,
-        "shuffle": parse_shuffle(_read_mode("shuffle")),
-        "loop": parse_loop(_read_mode("loop")),
+        "shuffle": parse_shuffle(_read_mode("shuffle", player)),
+        "loop": parse_loop(_read_mode("loop", player)),
         "track_id": track_id,
         "track_url": track_url,
     }
@@ -332,8 +337,8 @@ def loop_command(value):
     return {"none": "None", "track": "Track", "playlist": "Playlist"}.get(value)
 
 
-def _read_mode(command):
-    res = pctl(command)
+def _read_mode(command, player):
+    res = pctl(command, player=player)
     if res is None or res.returncode != 0:
         return None
     return res.stdout.strip()
@@ -674,6 +679,7 @@ class PlayerPopup:
         self.mode_key = None
         self.volume_mode = "player"
         self.player = ""
+        self.selected = None
 
         self.seek_timeout = 0
         self.seek_dragging = False
@@ -1246,6 +1252,7 @@ class PlayerPopup:
         self._cancel_fade()
         self.volume_mode = "hidden"
         self.player = ""
+        self.selected = None
         self.volume_key = None
         self.volume_ineffective_key = None
         self.mode_key = None
@@ -1352,7 +1359,12 @@ class PlayerPopup:
     def refresh(self):
         if not self.alive:
             return False
-        st = get_state()
+        selected = players.update_selection()
+        if not selected:
+            self.set_disconnected()
+            return True
+        self.selected = selected
+        st = get_state(selected)
         if st is None:
             self.set_disconnected()
         else:
@@ -1366,7 +1378,10 @@ class PlayerPopup:
     # --- действия -----------------------------------------------------------
 
     def run_action(self, *args):
-        pctl(*args, timeout=2)
+        selected = players.update_selection() or self.selected
+        if not selected:
+            return
+        pctl(*args, player=selected, timeout=2)
         # Меню НЕ закрывается после play/pause/next: это раздражало.
         GLib.timeout_add(180, self.refresh_once)
 
@@ -1436,7 +1451,7 @@ class PlayerPopup:
 
         target = pct / 100
         player = self.player
-        result = pctl("volume", "{:.2f}".format(target))
+        result = pctl("volume", "{:.2f}".format(target), player=player)
         set_ok = result is not None and result.returncode == 0
         if self.volume_readback_id:
             GLib.source_remove(self.volume_readback_id)
@@ -1452,7 +1467,7 @@ class PlayerPopup:
         if (not self.alive or self.player != player
                 or self.volume_key != key or self.state is None):
             return False
-        result = pctl("volume")
+        result = pctl("volume", player=player)
         actual = None
         if result is not None and result.returncode == 0:
             try:
@@ -1501,7 +1516,7 @@ class PlayerPopup:
         if not self.alive or not self.length or self.length <= 0:
             return False
         target = max(0.0, min(float(self.seek.get_value()), float(self.length)))
-        pctl("position", f"{target:.3f}", timeout=2)
+        pctl("position", f"{target:.3f}", player=self.player, timeout=2)
         self.last_seek = time.monotonic()
         self.cur_label.set_text(fmt_time(target))
         GLib.timeout_add(200, self.refresh_once)

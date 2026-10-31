@@ -3,7 +3,7 @@
 # waybar-player-status — JSON-источник для Waybar custom/player.
 #
 # Один долгоживущий процесс:
-#   * отдельный поток читает `playerctl --follow metadata --format ...`;
+#   * отдельный поток читает `playerctl -a --follow metadata --format ...`;
 #   * главный цикл двигает кадры диска и бегущую строку по таймеру;
 #   * при отсутствии плеера playerctl перезапускается раз в секунду.
 #
@@ -32,6 +32,7 @@ for _candidate in (
         sys.path.insert(0, str(_candidate))
         break
 from i18n import t  # noqa: E402
+import players  # noqa: E402
 
 SEP = "\x1f"
 FMT = SEP.join([
@@ -126,6 +127,15 @@ def parse_metadata_line(line):
         "art_url": clean_field(art_url),
         "volume": clean_field(volume),
     }
+
+
+def get_state(player):
+    if not player:
+        return None
+    line = players.player_metadata(player, FMT)
+    if not line:
+        return None
+    return parse_metadata_line(line)
 
 
 def track_key(state):
@@ -228,7 +238,7 @@ def reader_loop(events, stop_event=None):
     while stop_event is None or not stop_event.is_set():
         try:
             proc = subprocess.Popen(
-                ["playerctl", "--follow", "metadata", "--format", FMT],
+                ["playerctl", "-a", "--follow", "metadata", "--format", FMT],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
@@ -276,8 +286,9 @@ def main():
     events = queue.Queue()
     threading.Thread(target=reader_loop, args=(events,), daemon=True).start()
 
-    state = None
-    prev_key = None
+    selected = players.update_selection()
+    state = get_state(selected) if selected else None
+    prev_key = track_key(state) if state else None
     tick = 0
     offset = 0
     next_tick = time.monotonic() + 0.1
@@ -291,13 +302,20 @@ def main():
             item = ...
         else:
             while True:
-                if item is None:
-                    if state is not None:
+                new_selected = players.update_selection()
+                if new_selected != selected:
+                    selected = new_selected
+                    state = get_state(selected) if selected else None
+                    prev_key = track_key(state) if state else None
+                    offset = 0
+                    changed = True
+                elif item is None:
+                    if not selected and state is not None:
                         state = None
                         prev_key = None
                         offset = 0
                         changed = True
-                else:
+                elif selected and item["player"] == selected:
                     key = track_key(item)
                     if key != prev_key:
                         prev_key = key
