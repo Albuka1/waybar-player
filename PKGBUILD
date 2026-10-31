@@ -28,7 +28,7 @@ optdepends=(
     'wireplumber: system volume fallback via wpctl'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('081385ba05540bb70da5cf4cb668c78be7250c953e11f8ee6687e56957f6b8b8')
+sha256sums=('298aba6c624d883d3218bbcba5ecd8cc892856ff6e8513e9c0fab8bd7e1c5cac')
 
 package() {
     local src="$srcdir/$pkgname-$pkgver"
