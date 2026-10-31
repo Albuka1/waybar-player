@@ -2,6 +2,7 @@ import base64
 import colorsys
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -232,3 +233,41 @@ def test_volume_check_marks_only_for_playing_clear_result():
     assert not menu.volume_check_marks("playing", False, 1.0, 0.3)
     assert not menu.volume_check_marks("playing", True, None, 0.3)
     assert not menu.volume_check_marks("playing", True, 0.3, 0.3)
+
+
+def test_mode_visibility_rechecks_each_session(monkeypatch):
+    current = {"track": "A"}
+
+    def fake_pctl(*args, **_kwargs):
+        command = args[0]
+        if command == "metadata":
+            track = current["track"]
+            fields = [
+                "Playing", "chromium", "Title " + track, "Artist", "Album",
+                "", "0.5", "0", "100", "track-" + track, "https://example/" + track,
+            ]
+            return subprocess.CompletedProcess(args, 0, menu.SEP.join(fields) + "\n", "")
+        if command == "shuffle":
+            if current["track"] == "A":
+                return subprocess.CompletedProcess(args, 0, "Off\n", "")
+            return subprocess.CompletedProcess(args, 1, "", "No player could handle this command")
+        if command == "loop":
+            if current["track"] == "A":
+                return subprocess.CompletedProcess(args, 0, "Track\n", "")
+            return subprocess.CompletedProcess(args, 1, "", "No player could handle this command")
+        return None
+
+    monkeypatch.setattr(menu, "pctl", fake_pctl)
+    state_a = menu.get_state()
+    assert state_a["mode_key"] == "chromium|track-A"
+    assert menu.mode_visibility(state_a["shuffle"], state_a["loop"]) == (True, True)
+
+    current["track"] = "B"
+    state_b = menu.get_state()
+    assert state_b["mode_key"] == "chromium|track-B"
+    assert menu.mode_visibility(state_b["shuffle"], state_b["loop"]) == (False, False)
+
+    current["track"] = "A"
+    state_a2 = menu.get_state()
+    assert state_a2["mode_key"] == "chromium|track-A"
+    assert menu.mode_visibility(state_a2["shuffle"], state_a2["loop"]) == (True, True)

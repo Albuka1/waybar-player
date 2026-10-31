@@ -287,7 +287,7 @@ def get_state():
     if length is not None and length <= 0:
         length = None
 
-    return {
+    state = {
         "status": status.strip().lower(),
         "player": player.strip(),
         "title": title,
@@ -302,6 +302,8 @@ def get_state():
         "track_id": track_id,
         "track_url": track_url,
     }
+    state["mode_key"] = volume_track_key(state)
+    return state
 
 
 def parse_shuffle(value):
@@ -316,6 +318,10 @@ def parse_loop(value):
     if text in ("none", "track", "playlist"):
         return text
     return None
+
+
+def mode_visibility(shuffle, loop):
+    return (shuffle is not None, loop is not None)
 
 
 def next_loop(value):
@@ -665,6 +671,7 @@ class PlayerPopup:
         self.volume_readback_id = 0
         self.volume_key = None
         self.volume_ineffective_key = None
+        self.mode_key = None
         self.volume_mode = "player"
         self.player = ""
 
@@ -1137,8 +1144,17 @@ class PlayerPopup:
             ctx.remove_class("active")
 
     def _update_modes(self, st):
+        key = st.get("mode_key")
+        if key != self.mode_key:
+            self.mode_key = key
+            self.shuffle_btn.hide()
+            self.loop_btn.hide()
+            self._set_mode_active(self.shuffle_btn, False)
+            self._set_mode_active(self.loop_btn, False)
+
         shuffle = st.get("shuffle")
-        if shuffle is None:
+        show_shuffle, show_loop = mode_visibility(shuffle, st.get("loop"))
+        if not show_shuffle:
             self.shuffle_btn.hide()
         else:
             self.shuffle_btn.show()
@@ -1149,7 +1165,7 @@ class PlayerPopup:
             self._set_mode_active(self.shuffle_btn, shuffle == "on")
 
         loop = st.get("loop")
-        if loop is None:
+        if not show_loop:
             self.loop_btn.hide()
         else:
             self.loop_btn.show()
@@ -1232,6 +1248,7 @@ class PlayerPopup:
         self.player = ""
         self.volume_key = None
         self.volume_ineffective_key = None
+        self.mode_key = None
         self.vol_btn.hide()
         self.vol_scale.hide()
         if self.volume_readback_id:
