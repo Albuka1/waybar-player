@@ -37,6 +37,10 @@ package() {
     install -Dm755 "$src/bin/waybar-player-status" "$pkgdir/usr/bin/waybar-player-status"
     install -Dm755 "$src/bin/waybar-player-menu" "$pkgdir/usr/bin/waybar-player-menu"
     install -Dm644 "$src/share/player-menu.py" "$pkgdir/usr/share/waybar-player/player-menu.py"
+    install -Dm644 "$src/share/i18n.py" "$pkgdir/usr/share/waybar-player/i18n.py"
+    for locale in "$src"/locales/*.json; do
+        install -Dm644 "$locale" "$pkgdir/usr/share/waybar-player/locales/$(basename -- "$locale")"
+    done
 
     install -Dm644 "$src/examples/config.jsonc" "$pkgdir/usr/share/doc/$pkgname/examples/config.jsonc"
     install -Dm644 "$src/examples/style.css" "$pkgdir/usr/share/doc/$pkgname/examples/style.css"

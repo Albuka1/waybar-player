@@ -26,6 +26,10 @@ done
 install -Dm755 "$SCRIPT_DIR/bin/waybar-player-status" "$BIN_DIR/waybar-player-status"
 install -Dm755 "$SCRIPT_DIR/bin/waybar-player-menu" "$BIN_DIR/waybar-player-menu"
 install -Dm644 "$SCRIPT_DIR/share/player-menu.py" "$SHARE_DIR/player-menu.py"
+install -Dm644 "$SCRIPT_DIR/share/i18n.py" "$SHARE_DIR/i18n.py"
+for locale in "$SCRIPT_DIR"/locales/*.json; do
+    install -Dm644 "$locale" "$SHARE_DIR/locales/$(basename -- "$locale")"
+done
 
 install -Dm644 "$SCRIPT_DIR/examples/config.jsonc" "$DOC_DIR/config.jsonc"
 install -Dm644 "$SCRIPT_DIR/examples/style.css" "$DOC_DIR/style.css"
