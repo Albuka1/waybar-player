@@ -542,10 +542,14 @@ class PlayerPopup:
 
         self.refresh_id = 0
         self.anim_id = 0
+        self.fade_id = 0
         self.ws_timer = 0
         self.workspace_id = None
         self.anim_start = 0.0
         self.anim_from = 0
+        self.fade_id = 0
+        self.fade_step = 0
+        self.last_track_key = None
 
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
         self.win.set_title(t("menu.title"))
@@ -885,6 +889,7 @@ class PlayerPopup:
             self.vol_timeout,
             self.seek_timeout,
             self.anim_id,
+            self.fade_id,
             self.ws_timer,
         ):
             if source:
@@ -893,6 +898,7 @@ class PlayerPopup:
         self.vol_timeout = 0
         self.seek_timeout = 0
         self.anim_id = 0
+        self.fade_id = 0
         self.ws_timer = 0
         if self.accent_provider is not None and self.screen is not None:
             Gtk.StyleContext.remove_provider_for_screen(self.screen, self.accent_provider)
@@ -917,6 +923,36 @@ class PlayerPopup:
         return False
 
     # --- отрисовка ----------------------------------------------------------
+
+    def _cancel_fade(self):
+        if self.fade_id:
+            GLib.source_remove(self.fade_id)
+            self.fade_id = 0
+        for widget in (self.cover, self.title_label, self.artist_label, self.album_label):
+            widget.set_opacity(1.0)
+
+    def fade_in(self):
+        self._cancel_fade()
+        widgets = (self.cover, self.title_label, self.artist_label, self.album_label)
+        for widget in widgets:
+            widget.set_opacity(0.15)
+        steps = 10
+        self.fade_step = 0
+
+        def tick():
+            self.fade_step += 1
+            opacity = 0.15 + 0.85 * (self.fade_step / steps)
+            for widget in widgets:
+                widget.set_opacity(opacity)
+            if self.fade_step >= steps:
+                for widget in widgets:
+                    widget.set_opacity(1.0)
+                self.fade_id = 0
+                return False
+            self.fade_id = GLib.timeout_add(15, tick)
+            return False
+
+        self.fade_id = GLib.timeout_add(15, tick)
 
     def apply_accent(self, color):
         css = (
@@ -1006,6 +1042,8 @@ class PlayerPopup:
         self.info_stack.set_visible_child_name("status")
         self.shuffle_btn.hide()
         self.loop_btn.hide()
+        self.last_track_key = None
+        self._cancel_fade()
         self.length = None
         self.art_token += 1
         if self.art_url is not None:
@@ -1026,6 +1064,10 @@ class PlayerPopup:
         self.state = st
         self.set_controls_sensitive(True)
         self._update_modes(st)
+
+        key = (st["player"], st["title"], st["artist"], st["album"], st["art_url"])
+        track_changed = self.last_track_key is not None and key != self.last_track_key
+        self.last_track_key = key
 
         title = st["title"] or st["artist"] or st["player"] or t("status.no_title")
         self.title_label.set_text(title)
@@ -1054,6 +1096,9 @@ class PlayerPopup:
                     args=(token, self.art_url),
                     daemon=True,
                 ).start()
+
+        if track_changed:
+            self.fade_in()
 
         if st["volume"] is None:
             self.vol_btn.set_sensitive(False)
