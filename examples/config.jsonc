@@ -11,9 +11,9 @@
     "exec-on-event": false,
     "restart-interval": 2,
     "on-click": "waybar-player-menu",
-    "on-click-middle": "playerctl previous",
-    "on-click-right": "playerctl play-pause",
-    "on-scroll-up": "playerctl volume 0.05+",
-    "on-scroll-down": "playerctl volume 0.05-"
+    "on-click-middle": "waybar-player-ctl previous",
+    "on-click-right": "waybar-player-ctl play-pause",
+    "on-scroll-up": "waybar-player-ctl volume-up",
+    "on-scroll-down": "waybar-player-ctl volume-down"
   }
 }
