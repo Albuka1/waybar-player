@@ -1,4 +1,5 @@
 # Maintainer: <user> <email>
+# shellcheck disable=SC2034,SC2154
 pkgname=waybar-player
 pkgver=0.1.0
 pkgrel=1
@@ -6,12 +7,40 @@ pkgdesc="Compact MPRIS player module and layer-shell popup for Waybar"
 arch=('any')
 url="https://github.com/<user>/waybar-player"
 license=('MIT')
+depends=(
+    bash
+    waybar
+    playerctl
+    python
+    python-gobject
+    gtk3
+    gtk-layer-shell
+    gdk-pixbuf2
+    pango
+    util-linux
+    procps-ng
+    coreutils
+)
+optdepends=(
+    'niri: close the popup when switching workspaces'
+    'ttf-jetbrains-mono-nerd: Nerd Font glyphs used by the UI'
+    'libnotify: error notifications'
+)
 source=("$pkgname-$pkgver.tar.gz")
+# Release tarball checksum is intentionally left as SKIP for local builds.
+# Replace with the real sha256 before publishing a release package.
 sha256sums=('SKIP')
 
 package() {
-    install -Dm755 bin/waybar-player-status "$pkgdir/usr/bin/waybar-player-status"
-    install -Dm755 bin/waybar-player-menu "$pkgdir/usr/bin/waybar-player-menu"
-    install -Dm644 share/player-menu.py "$pkgdir/usr/share/waybar-player/player-menu.py"
-    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    local src="$srcdir/$pkgname-$pkgver"
+
+    install -Dm755 "$src/bin/waybar-player-status" "$pkgdir/usr/bin/waybar-player-status"
+    install -Dm755 "$src/bin/waybar-player-menu" "$pkgdir/usr/bin/waybar-player-menu"
+    install -Dm644 "$src/share/player-menu.py" "$pkgdir/usr/share/waybar-player/player-menu.py"
+
+    install -Dm644 "$src/examples/config.jsonc" "$pkgdir/usr/share/doc/$pkgname/examples/config.jsonc"
+    install -Dm644 "$src/examples/style.css" "$pkgdir/usr/share/doc/$pkgname/examples/style.css"
+    install -Dm644 "$src/docs/parity.md" "$pkgdir/usr/share/doc/$pkgname/parity.md"
+    install -Dm644 "$src/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 "$src/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
