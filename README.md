@@ -38,6 +38,13 @@ libnotify               # error notifications
 
 ## Installation
 
+### Get the code
+
+```bash
+git clone https://github.com/Albuka1/waybar-player
+cd waybar-player
+```
+
 ### User install, no sudo
 
 ```bash
@@ -64,7 +71,8 @@ $PREFIX/share/doc/waybar-player/
 3. `../share/player-menu.py` (git checkout);
 4. `/usr/share/waybar-player/player-menu.py` (system package).
 
-Make sure `$PREFIX/bin` is in Waybar's `PATH`.
+Make sure `$PREFIX/bin` is in Waybar's `PATH`, or use absolute paths in the
+Waybar config (for example `~/.local/bin/waybar-player-status`).
 
 Uninstall the installed files (configuration and cache are untouched):
 
@@ -81,6 +89,8 @@ The PKGBUILD expects a release tarball:
 git archive --prefix=waybar-player-0.1.0/ -o waybar-player-0.1.0.tar.gz HEAD
 makepkg -si
 ```
+
+Once a release tag exists on GitHub, `makepkg` downloads it automatically.
 
 ## Waybar setup
 
@@ -139,7 +149,7 @@ See [`examples/style.css`](examples/style.css).
 |---|---:|---|
 | `WAYBAR_PLAYER_RIGHT_MARGIN` | `215` | Popup offset from the right screen edge. |
 | `WAYBAR_PLAYER_WIDTH` | `320` | Popup width in pixels. |
-| `WAYBAR_PLAYER_TITLE_WIDTH` | `30` | Tray title width in characters. |
+| `WAYBAR_PLAYER_TITLE_WIDTH` | `30` | Bar title width in characters. |
 | `WAYBAR_PLAYER_ART_DIRS` | empty | Extra `file://` cover directories, colon-separated. |
 | `WAYBAR_PLAYER_LANG` | unset | Force `en`, `ru`, or another installed locale. |
 
@@ -221,6 +231,7 @@ examples/
 docs/
   parity.md
   screenshot.png
+  screenshot-ru.png
 tests/
 PKGBUILD
 install.sh
@@ -245,6 +256,7 @@ LICENSE
 Установка без sudo:
 
 ```bash
+git clone https://github.com/Albuka1/waybar-player && cd waybar-player
 ./install.sh                  # ~/.local
 PREFIX="$HOME/.local" ./install.sh
 ./uninstall.sh
@@ -267,6 +279,9 @@ PREFIX="$HOME/.local" ./install.sh
 }
 ```
 
+Если `~/.local/bin` нет в `PATH` у Waybar, укажите полные пути
+(`~/.local/bin/waybar-player-status`).
+
 Переменные: `WAYBAR_PLAYER_RIGHT_MARGIN` (215), `WAYBAR_PLAYER_WIDTH` (320),
 `WAYBAR_PLAYER_TITLE_WIDTH` (30), `WAYBAR_PLAYER_ART_DIRS` (пусто),
 `WAYBAR_PLAYER_LANG` (не задан).
@@ -278,18 +293,6 @@ PREFIX="$HOME/.local" ./install.sh
 Добавить язык: скопировать `locales/en.json` в `locales/xx.json`, перевести
 значения, сохранить ключи и `{плейсхолдеры}`, затем снова запустить
 `./install.sh` и задать `WAYBAR_PLAYER_LANG=xx`.
-
-### Бэкап и откат
-
-Перед заменой старого плеера создайте бэкап конфигурации и скриптов; если в
-бэкапе есть `rollback.sh`, откат выполняется одной командой:
-
-```bash
-~/.config/waybar/backup-waybar-player-*/rollback.sh
-```
-
-Скрипт возвращает `config.jsonc`, `style.css`, старые скрипты, останавливает
-новые процессы `waybar-player-*` и перезагружает Waybar сигналом `SIGUSR2`.
 
 ## License
 
