@@ -22,6 +22,10 @@ English popup; the Russian popup is shown in the Russian section below.
 - Accent colour sampled from the cover (`WAYBAR_PLAYER_ACCENT=cover|fixed`),
   with the orange `#ff8c00` fallback.
 - 150 ms fade for cover and text on track changes.
+- Accent-coloured hover, press and focus states; play-button icon switches
+  between black and white for contrast.
+- Volume readback: if a player ignores volume changes, the slider falls back
+  to the system sink via `wpctl` (or hides with `WAYBAR_PLAYER_VOLUME_FALLBACK=hide`).
 - English and Russian UI, plus a JSON-based way to add more languages.
 
 ## Requirements (Arch)
@@ -39,6 +43,7 @@ Optional:
 niri                    # close the popup on workspace switch
 ttf-jetbrains-mono-nerd # Nerd Font glyphs
 libnotify               # error notifications
+wireplumber             # wpctl system-volume fallback
 ```
 
 ## Installation
@@ -157,6 +162,7 @@ See [`examples/style.css`](examples/style.css).
 | `WAYBAR_PLAYER_ART_DIRS` | empty | Extra `file://` cover directories, colon-separated. |
 | `WAYBAR_PLAYER_LANG` | unset | Force `en`, `ru`, or another installed locale. |
 | `WAYBAR_PLAYER_ACCENT` | `cover` | `cover` samples the cover colour; `fixed` keeps `#ff8c00`. |
+| `WAYBAR_PLAYER_VOLUME_FALLBACK` | `sink` | `sink` uses `wpctl` for ineffective player volume; `hide` hides the slider. |
 
 Language selection order: `WAYBAR_PLAYER_LANG`, `LC_ALL`, `LC_MESSAGES`,
 `LANG`. The first two letters are used (`ru_RU.UTF-8` → `ru`); unknown
@@ -191,6 +197,8 @@ To add a language:
   icon opens the volume page, the bottom slider seeks, `✕`/`Esc` closes.
 - Loop cycles through `None → Track → Playlist`; shuffle toggles on/off. Players
   without these properties do not show the buttons.
+- If a player ignores volume changes, the slider switches to “System volume”
+  (`wpctl`) or disappears when `WAYBAR_PLAYER_VOLUME_FALLBACK=hide`.
 - The popup closes on outside click, a second module click, or a niri
   workspace switch.
 
@@ -292,10 +300,14 @@ PREFIX="$HOME/.local" ./install.sh
 
 Переменные: `WAYBAR_PLAYER_RIGHT_MARGIN` (215), `WAYBAR_PLAYER_WIDTH` (320),
 `WAYBAR_PLAYER_TITLE_WIDTH` (30), `WAYBAR_PLAYER_ART_DIRS` (пусто),
-`WAYBAR_PLAYER_LANG` (не задан), `WAYBAR_PLAYER_ACCENT` (`cover`).
+`WAYBAR_PLAYER_LANG` (не задан), `WAYBAR_PLAYER_ACCENT` (`cover`),
+`WAYBAR_PLAYER_VOLUME_FALLBACK` (`sink`).
 Шафл/повтор показываются только при поддержке MPRIS; повтор идёт по кругу
 `None → Track → Playlist`. Цвет заголовка, ползунков и верхней полосы берётся
 из обложки (`fixed` — оранжевый `#ff8c00`); смена трека — fade ~150 мс.
+Ховеры/нажатия/фокус кнопок и активные shuffle/loop используют акцент;
+если плеер игнорирует громкость, слайдер переходит на системную громкость
+через `wpctl` (`hide` — скрыть). Для системного fallback нужен `wireplumber`.
 
 Обложки: `https` и `file://` только внутри `/tmp`, `XDG_RUNTIME_DIR`,
 `XDG_CACHE_HOME`/`~/.cache` и `WAYBAR_PLAYER_ART_DIRS`; проверяются realpath,
