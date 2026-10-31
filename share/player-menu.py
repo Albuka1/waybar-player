@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import glob
 import hashlib
 import ipaddress
 import json
@@ -57,6 +58,7 @@ PLAYERCTL_TIMEOUT = 1.5
 OPEN_ANIM_MS = 100
 ART_MAX_BYTES = 8 * 1024 * 1024
 ART_TIMEOUT = 4
+CACHE_MAX_AGE_DAYS = 14
 
 CSS = b"""
 * {
@@ -267,6 +269,17 @@ def get_state():
         "position": to_seconds(pos_raw) or 0.0,
         "length": length,
     }
+
+
+def cleanup_cover_cache(max_age_days=CACHE_MAX_AGE_DAYS):
+    """Удаляет popup-*.img, которые не использовались дольше max_age_days."""
+    cutoff = time.time() - max_age_days * 24 * 60 * 60
+    for path in glob.glob(os.path.join(CACHE_DIR, "popup-*.img")):
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.unlink(path)
+        except OSError:
+            continue
 
 
 def _is_public_address(host):
@@ -981,6 +994,7 @@ class PlayerPopup:
 
 def main():
     os.makedirs(CACHE_DIR, exist_ok=True)
+    cleanup_cover_cache()
     settings = Gtk.Settings.get_default()
     if settings is not None:
         settings.set_property("gtk-application-prefer-dark-theme", True)
