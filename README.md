@@ -3,9 +3,9 @@
 A compact MPRIS player for Waybar: a JSON status module and a GTK3 +
 gtk-layer-shell popup.
 
-![waybar-player screenshot placeholder](docs/screenshot.png)
+![waybar-player popup](docs/screenshot.png)
 
-> Screenshot placeholder — replace `docs/screenshot.png` with a real capture.
+English popup; the Russian popup is shown in the Russian section below.
 
 ## Features
 
@@ -229,6 +229,8 @@ LICENSE
 ```
 
 ## Русский
+
+![Попап waybar-player](docs/screenshot-ru.png)
 
 Компактный MPRIS-плеер для Waybar: JSON-модуль в панели и всплывающая карточка
 на GTK3 + gtk-layer-shell.
