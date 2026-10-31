@@ -4,9 +4,20 @@ import queue
 import threading
 import time
 
+import i18n
+import pytest
+
 from helpers import load_module
 
 status = load_module("waybar_player_status", "bin/waybar-player-status")
+
+
+@pytest.fixture(autouse=True)
+def _russian_language():
+    previous = i18n.language()
+    i18n.set_language("ru")
+    yield
+    i18n.set_language(previous)
 
 
 def test_marquee_keeps_short_title():
