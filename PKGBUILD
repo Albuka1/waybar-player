@@ -27,7 +27,7 @@ optdepends=(
     'libnotify: error notifications'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('2de946978025d487cae40d2f927397edb4471ea1eaf808fe9600285ccd41a8cf')
+sha256sums=('eee1678cb44dec1df54841ef19737ee3ba13ca8117950d62619a4ae9de0c9de9')
 
 package() {
     local src="$srcdir/$pkgname-$pkgver"
