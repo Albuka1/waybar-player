@@ -158,3 +158,37 @@ def test_reader_loop_restarts_after_follow_exit(tmp_path, monkeypatch):
     assert counter.exists()
     assert len(counter.read_text(encoding="utf-8").splitlines()) >= 2
     assert not events.empty()
+
+
+def test_status_transition_playing_paused_playing():
+    playing = json.loads(status.status_json(_state(status="playing"), 0, 0, 30))
+    paused = json.loads(status.status_json(_state(status="paused"), 0, 0, 30))
+    playing_again = json.loads(status.status_json(_state(status="playing"), 1, 0, 30))
+
+    assert playing["class"] == "playing"
+    assert playing["text"].startswith("◐")
+    assert paused["class"] == "paused"
+    assert paused["text"].startswith("󰏤")
+    assert playing_again["class"] == "playing"
+    assert playing_again["text"].startswith("◓")
+
+
+def test_two_players_selected_pause_changes_class():
+    statuses = {"A": "playing", "B": "paused"}
+    selected = status.players.select_player(["A", "B"], statuses, current="A")
+    assert selected == "A"
+    assert json.loads(status.status_json(_state(status="playing"), 0, 0, 30))["class"] == "playing"
+
+    statuses["A"] = "paused"
+    selected = status.players.select_player(["A", "B"], statuses, current="A")
+    assert selected == "A"
+    assert json.loads(status.status_json(_state(status="paused"), 0, 0, 30))["class"] == "paused"
+
+
+def test_non_selected_pause_does_not_change_selection():
+    statuses = {"A": "playing", "B": "paused"}
+    selected = status.players.select_player(["A", "B"], statuses, current="A")
+    playing = json.loads(status.status_json(_state(status="playing"), 0, 0, 30))
+    statuses["B"] = "paused"
+    assert status.players.select_player(["A", "B"], statuses, current=selected) == "A"
+    assert playing["class"] == "playing"

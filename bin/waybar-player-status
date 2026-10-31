@@ -279,7 +279,9 @@ def reader_loop(events, stop_event=None):
 
 def main():
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(
+            encoding="utf-8", errors="replace", line_buffering=True
+        )
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
@@ -292,42 +294,53 @@ def main():
     tick = 0
     offset = 0
     next_tick = time.monotonic() + 0.1
+    next_poll = time.monotonic() + 1.0
 
     while True:
-        timeout = max(0.0, next_tick - time.monotonic())
+        now = time.monotonic()
+        timeout = max(0.0, min(next_tick, next_poll) - now)
         changed = False
+        got_event = False
         try:
-            item = events.get(timeout=timeout)
+            events.get(timeout=timeout)
         except queue.Empty:
-            item = ...
+            pass
         else:
+            got_event = True
             while True:
-                new_selected = players.update_selection()
-                if new_selected != selected:
-                    selected = new_selected
-                    state = get_state(selected) if selected else None
-                    prev_key = track_key(state) if state else None
-                    offset = 0
-                    changed = True
-                elif item is None:
-                    if not selected and state is not None:
-                        state = None
-                        prev_key = None
-                        offset = 0
-                        changed = True
-                elif selected and item["player"] == selected:
-                    key = track_key(item)
-                    if key != prev_key:
-                        prev_key = key
-                        offset = 0
-                    state = item
-                    changed = True
                 try:
-                    item = events.get_nowait()
+                    events.get_nowait()
                 except queue.Empty:
                     break
 
+        # Any follow event (status or metadata) re-reads the selected player.
+        if got_event:
+            new_selected = players.update_selection()
+            selected = new_selected
+            new_state = get_state(selected) if selected else None
+            if new_state != state:
+                state = new_state
+                prev_key = track_key(state) if state else None
+                offset = 0
+                changed = True
+
+        # Safety net: poll all statuses once a second, query only on a change.
         now = time.monotonic()
+        if now >= next_poll:
+            new_selected = players.update_selection()
+            status = players.player_status(new_selected) if new_selected else None
+            current_status = state["status"] if state else None
+            if (new_selected != selected or new_selected is None
+                    or state is None or status != current_status):
+                selected = new_selected
+                new_state = get_state(selected) if selected else None
+                if new_state != state:
+                    state = new_state
+                    prev_key = track_key(state) if state else None
+                    offset = 0
+                    changed = True
+            next_poll = now + 1.0
+
         due = now >= next_tick
         if state is None or state["status"] != "playing":
             offset = 0
