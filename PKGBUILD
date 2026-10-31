@@ -1,7 +1,7 @@
 # Maintainer: Albuka1
 # shellcheck disable=SC2034,SC2154
 pkgname=waybar-player
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="Compact MPRIS player module and layer-shell popup for Waybar"
 arch=('any')
