@@ -26,10 +26,8 @@ optdepends=(
     'ttf-jetbrains-mono-nerd: Nerd Font glyphs used by the UI'
     'libnotify: error notifications'
 )
-source=("$pkgname-$pkgver.tar.gz")
-# Release tarball checksum is intentionally left as SKIP for local builds.
-# Replace with the real sha256 before publishing a release package.
-sha256sums=('SKIP')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('2de946978025d487cae40d2f927397edb4471ea1eaf808fe9600285ccd41a8cf')
 
 package() {
     local src="$srcdir/$pkgname-$pkgver"

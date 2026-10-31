@@ -5,3 +5,7 @@ __pycache__/
 dist/
 pkg/
 *.tar.gz
+*.tar.gz
+pkg/
+src/
+*.pkg.tar.zst

@@ -83,14 +83,13 @@ Uninstall the installed files (configuration and cache are untouched):
 
 ### Arch package
 
-The PKGBUILD expects a release tarball:
+The PKGBUILD downloads the tagged release from GitHub:
 
 ```bash
-git archive --prefix=waybar-player-0.1.0/ -o waybar-player-0.1.0.tar.gz HEAD
+mkdir /tmp/waybar-player-build && cd /tmp/waybar-player-build
+curl -LO https://raw.githubusercontent.com/Albuka1/waybar-player/master/PKGBUILD
 makepkg -si
 ```
-
-Once a release tag exists on GitHub, `makepkg` downloads it automatically.
 
 ## Waybar setup
 
