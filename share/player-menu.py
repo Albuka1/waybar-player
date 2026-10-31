@@ -503,6 +503,39 @@ def load_cover(path):
     return pb
 
 
+def _hex_rgb(color):
+    value = color.lstrip("#")
+    if len(value) != 6:
+        return (255, 140, 0)
+    try:
+        return tuple(int(value[index:index + 2], 16) for index in (0, 2, 4))
+    except ValueError:
+        return (255, 140, 0)
+
+
+def accent_foreground(color):
+    """Чёрный или белый значок по контрасту с акцентным фоном."""
+    red, green, blue = _hex_rgb(color)
+
+    def linear(channel):
+        channel = channel / 255.0
+        if channel <= 0.03928:
+            return channel / 12.92
+        return ((channel + 0.055) / 1.055) ** 2.4
+
+    luminance = (
+        0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+    )
+    black_contrast = (luminance + 0.05) / 0.05
+    white_contrast = 1.05 / (luminance + 0.05)
+    return "#000000" if black_contrast >= white_contrast else "#ffffff"
+
+
+def accent_soft(color, alpha=0.18):
+    red, green, blue = _hex_rgb(color)
+    return "rgba({}, {}, {}, {})".format(red, green, blue, alpha)
+
+
 def readable_accent(r, g, b):
     """Поднимает светлоту и насыщенность цвета до читаемого порога."""
     hue, lightness, saturation = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
@@ -955,12 +988,20 @@ class PlayerPopup:
         self.fade_id = GLib.timeout_add(15, tick)
 
     def apply_accent(self, color):
+        foreground = accent_foreground(color)
+        soft = accent_soft(color)
         css = (
-            "#player-card {{ border-top-color: {0}; }}\n"
-            "#popup-title {{ color: {0}; }}\n"
-            "scale trough highlight {{ background-color: {0}; }}\n"
-            "scale trough slider {{ background-color: {0}; }}\n"
-        ).format(color)
+            "#player-card {{ border-top-color: {accent}; }}\n"
+            "#popup-title {{ color: {accent}; }}\n"
+            "scale trough highlight {{ background-color: {accent}; }}\n"
+            "scale trough slider {{ background-color: {accent}; }}\n"
+            ".control-btn:hover {{ background-color: {soft}; color: {accent}; }}\n"
+            ".control-btn:active {{ background-color: {accent}; color: {foreground}; }}\n"
+            ".control-btn:focus {{ background-color: {soft}; color: {accent}; outline-color: {accent}; }}\n"
+            "#play-btn:hover {{ background-color: {accent}; color: {foreground}; }}\n"
+            "#play-btn:active {{ background-color: {accent}; color: {foreground}; }}\n"
+            ".mode-btn.active {{ color: {accent}; }}\n"
+        ).format(accent=color, foreground=foreground, soft=soft)
         self.accent_provider.load_from_data(css.encode("utf-8"))
 
     def set_placeholder(self):

@@ -171,3 +171,10 @@ def test_readable_accent_brightens_dark_colour():
 def test_readable_accent_keeps_orange_readable():
     color = menu.readable_accent(255, 140, 0)
     assert color != "#000000"
+
+
+def test_accent_foreground_uses_contrast():
+    assert menu.accent_foreground("#000000") == "#ffffff"
+    assert menu.accent_foreground("#ffffff") == "#000000"
+    assert menu.accent_foreground("#ff8c00") == "#000000"
+    assert menu.accent_soft("#ff8c00") == "rgba(255, 140, 0, 0.18)"
