@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+#
+# waybar-player-menu — открыть/закрыть всплывающее меню waybar-player.
+#
+# Скрипт остаётся маленькой bash-обёрткой: он отвечает за single-instance
+# (flock + pid), а весь GTK-интерфейс живёт в player-menu.py.
+#
+# player-menu.py ищется:
+#   1. рядом с этим скриптом;
+#   2. в ../share/player-menu.py (запуск из git-чекаута);
+#   3. в /usr/share/waybar-player/player-menu.py (после установки пакета).
+
+set -uo pipefail
+
+export LC_ALL=C.UTF-8
+
+SCRIPT_PATH=$(readlink -f -- "${BASH_SOURCE[0]}")
+readonly SCRIPT_PATH
+SCRIPT_DIR=$(dirname -- "$SCRIPT_PATH")
+readonly SCRIPT_DIR
+
+readonly RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/waybar-player"
+readonly CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/waybar-player"
+readonly PID_FILE="$RUNTIME_DIR/menu.pid"
+readonly LOCK_FILE="$RUNTIME_DIR/menu.lock"
+readonly LOG_FILE="$CACHE_DIR/menu.log"
+
+mkdir -p "$RUNTIME_DIR" "$CACHE_DIR" 2>/dev/null
+
+notify_user() {
+    local summary=$1 body=${2:-}
+    if command -v notify-send >/dev/null 2>&1; then
+        timeout 3 notify-send -a "Waybar" -i audio-x-generic -t 3500 "$summary" "$body" 2>/dev/null
+    elif command -v zenity >/dev/null 2>&1; then
+        timeout 5 zenity --info --title="$summary" --text="${body:-$summary}" --timeout=4 2>/dev/null
+    fi
+}
+
+find_menu_py() {
+    local candidate
+    for candidate in \
+        "$SCRIPT_DIR/player-menu.py" \
+        "$SCRIPT_DIR/../share/player-menu.py" \
+        "/usr/share/waybar-player/player-menu.py"; do
+        if [[ -f $candidate ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if ! command -v playerctl >/dev/null 2>&1; then
+    notify_user "Медиаплеер" "playerctl не установлен"
+    exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+    notify_user "Медиаплеер" "python3 не установлен"
+    exit 1
+fi
+
+MENU_PY=$(find_menu_py) || {
+    notify_user "Медиаплеер" "player-menu.py не найден (ожидается /usr/share/waybar-player/player-menu.py)"
+    exit 1
+}
+readonly MENU_PY
+
+# --- одна копия меню + toggle ------------------------------------------------
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    old_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    killed=0
+    if [[ ${old_pid:-} =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+        kill "$old_pid" 2>/dev/null && killed=1
+    fi
+    if (( killed == 0 )); then
+        # Страховка от пустого pid-файла: ищем именно bash с этим скриптом.
+        while read -r p; do
+            [[ -n ${p:-} ]] || continue
+            [[ $p == "$$" ]] && continue
+            cmd=$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null) || continue
+            [[ $cmd =~ ^(bash|/usr/bin/bash)[[:space:]]+[^[:space:]]*waybar-player-menu[[:space:]]*$ ]] || continue
+            kill "$p" 2>/dev/null && killed=1
+        done < <(pgrep -f 'waybar-player-menu' 2>/dev/null || true)
+    fi
+    exit 0
+fi
+
+printf '%s\n' "$$" >"$PID_FILE" 2>/dev/null
+
+child=""
+cleanup() {
+    [[ -n $child ]] && kill "$child" 2>/dev/null
+    if [[ "$(cat "$PID_FILE" 2>/dev/null || true)" == "$$" ]]; then
+        rm -f "$PID_FILE" 2>/dev/null
+    fi
+}
+trap 'cleanup; exit 0' INT TERM
+trap cleanup EXIT
+
+export PM_CACHE="$CACHE_DIR"
+: >"$LOG_FILE" 2>/dev/null
+
+# 9>&- закрывает унаследованный flock-дескриптор в Python: блокировка
+# снимается вместе с завершением bash-обёртки.
+python3 "$MENU_PY" 9>&- 2>>"$LOG_FILE" &
+child=$!
+wait "$child" 2>/dev/null
+child=""

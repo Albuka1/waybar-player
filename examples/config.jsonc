@@ -1,0 +1,19 @@
+{
+  "modules-right": [
+    "custom/player"
+  ],
+
+  "custom/player": {
+    "exec": "waybar-player-status",
+    "return-type": "json",
+    "escape": true,
+    "tooltip": true,
+    "exec-on-event": false,
+    "restart-interval": 2,
+    "on-click": "waybar-player-menu",
+    "on-click-middle": "playerctl previous",
+    "on-click-right": "playerctl play-pause",
+    "on-scroll-up": "playerctl volume 0.05+",
+    "on-scroll-down": "playerctl volume 0.05-"
+  }
+}

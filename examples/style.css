@@ -1,0 +1,22 @@
+/* --- Медиаплеер: зона в панели --- */
+#custom-player {
+    color: #ff8c00;
+    padding: 0 16px;
+    margin: 0 8px;
+    background-color: rgba(255, 140, 0, 0.08);
+    border-radius: 6px;
+}
+
+#custom-player.paused {
+    color: #666666;
+    background-color: rgba(255, 255, 255, 0.045);
+}
+
+#custom-player.stopped {
+    color: #555555;
+    background-color: transparent;
+}
+
+#custom-player:hover {
+    background-color: rgba(255, 140, 0, 0.18);
+}
