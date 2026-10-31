@@ -14,6 +14,7 @@ EXPECTED_RU = {
     "menu.play_pause": "Плей/Пауза",
     "menu.next": "Следующий трек",
     "menu.volume": "Громкость",
+    "menu.system_volume": "Системная громкость",
     "menu.status": "{player} • {status}",
     "menu.play": "Играть",
     "menu.pause": "Пауза",
@@ -65,7 +66,7 @@ def test_catalogs_have_same_keys_and_placeholders():
     en = _load("en")
     ru = _load("ru")
     assert set(en) == set(ru)
-    assert len(en) == 31
+    assert len(en) == 32
     for key in en:
         assert _placeholders(en[key]) == _placeholders(ru[key]), key
 

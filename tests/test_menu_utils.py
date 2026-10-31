@@ -178,3 +178,30 @@ def test_accent_foreground_uses_contrast():
     assert menu.accent_foreground("#ffffff") == "#000000"
     assert menu.accent_foreground("#ff8c00") == "#000000"
     assert menu.accent_soft("#ff8c00") == "rgba(255, 140, 0, 0.18)"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Volume: 0.42", 0.42),
+        ("Volume: 1.00 [MUTED]", 1.0),
+        ("Volume: 0.0", 0.0),
+        ("", None),
+        ("no volume", None),
+    ],
+)
+def test_parse_wpctl_volume(text, expected):
+    assert menu.parse_wpctl_volume(text) == expected
+
+
+def test_volume_readback_matches():
+    assert menu.volume_readback_matches(0.30, 0.30)
+    assert not menu.volume_readback_matches(1.0, 0.30)
+    assert not menu.volume_readback_matches(None, 0.30)
+
+
+def test_resolve_volume_mode():
+    assert menu.resolve_volume_mode(False) == "player"
+    assert menu.resolve_volume_mode(True, "sink", True) == "sink"
+    assert menu.resolve_volume_mode(True, "sink", False) == "hidden"
+    assert menu.resolve_volume_mode(True, "hide", True) == "hidden"

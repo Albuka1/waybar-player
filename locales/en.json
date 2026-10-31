@@ -29,5 +29,6 @@
   "mode.off": "off",
   "mode.none": "off",
   "mode.track": "track",
-  "mode.playlist": "playlist"
+  "mode.playlist": "playlist",
+  "menu.system_volume": "System volume"
 }

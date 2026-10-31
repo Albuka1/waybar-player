@@ -29,5 +29,6 @@
   "mode.off": "выкл",
   "mode.none": "выкл",
   "mode.track": "трек",
-  "mode.playlist": "плейлист"
+  "mode.playlist": "плейлист",
+  "menu.system_volume": "Системная громкость"
 }

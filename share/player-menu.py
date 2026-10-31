@@ -5,6 +5,8 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -63,6 +65,10 @@ DEFAULT_ACCENT = "#ff8c00"
 ACCENT_MODE = os.environ.get("WAYBAR_PLAYER_ACCENT", "cover").strip().lower()
 if ACCENT_MODE not in ("cover", "fixed"):
     ACCENT_MODE = "cover"
+VOLUME_FALLBACK = os.environ.get("WAYBAR_PLAYER_VOLUME_FALLBACK", "sink").strip().lower()
+if VOLUME_FALLBACK not in ("sink", "hide"):
+    VOLUME_FALLBACK = "sink"
+HAVE_WPCTL = shutil.which("wpctl") is not None
 PLAYERCTL_TIMEOUT = 1.5
 OPEN_ANIM_MS = 100
 ART_MAX_BYTES = 8 * 1024 * 1024
@@ -503,6 +509,65 @@ def load_cover(path):
     return pb
 
 
+def parse_wpctl_volume(text):
+    if not text:
+        return None
+    match = re.search(r"Volume:\s*([0-9]+(?:\.[0-9]+)?)", text)
+    if not match:
+        return None
+    try:
+        return max(0.0, min(1.0, float(match.group(1))))
+    except ValueError:
+        return None
+
+
+def volume_readback_matches(actual, target, tolerance=0.03):
+    return actual is not None and abs(actual - target) <= tolerance
+
+
+def resolve_volume_mode(ineffective, fallback=None, have_wpctl=None):
+    if not ineffective:
+        return "player"
+    fallback = VOLUME_FALLBACK if fallback is None else fallback
+    have_wpctl = HAVE_WPCTL if have_wpctl is None else have_wpctl
+    return "sink" if fallback == "sink" and have_wpctl else "hidden"
+
+
+def wpctl_get_volume():
+    if not HAVE_WPCTL:
+        return None
+    try:
+        result = subprocess.run(
+            ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=1.5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return parse_wpctl_volume(result.stdout)
+
+
+def wpctl_set_volume(value):
+    if not HAVE_WPCTL:
+        return False
+    try:
+        result = subprocess.run(
+            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "{:.2f}".format(value)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1.5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def _hex_rgb(color):
     value = color.lstrip("#")
     if len(value) != 6:
@@ -567,6 +632,10 @@ class PlayerPopup:
         self.vol_timeout = 0
         self.vol_dragging = False
         self.updating_vol = False
+        self.volume_readback_id = 0
+        self.volume_ineffective = set()
+        self.volume_mode = "player"
+        self.player = ""
 
         self.seek_timeout = 0
         self.seek_dragging = False
@@ -731,10 +800,10 @@ class PlayerPopup:
         vol_page = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         vol_page.set_valign(Gtk.Align.CENTER)
 
-        vol_title = Gtk.Label(label=t("menu.volume"))
-        vol_title.set_name("popup-small")
-        vol_title.set_xalign(0.0)
-        vol_page.pack_start(vol_title, False, False, 0)
+        self.vol_title = Gtk.Label(label=t("menu.volume"))
+        self.vol_title.set_name("popup-small")
+        self.vol_title.set_xalign(0.0)
+        vol_page.pack_start(self.vol_title, False, False, 0)
 
         self.vol_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
         self.vol_scale.set_name("volume-scale")
@@ -920,6 +989,7 @@ class PlayerPopup:
         for source in (
             self.refresh_id,
             self.vol_timeout,
+            self.volume_readback_id,
             self.seek_timeout,
             self.anim_id,
             self.fade_id,
@@ -929,6 +999,7 @@ class PlayerPopup:
                 GLib.source_remove(source)
         self.refresh_id = 0
         self.vol_timeout = 0
+        self.volume_readback_id = 0
         self.seek_timeout = 0
         self.anim_id = 0
         self.fade_id = 0
@@ -1057,6 +1128,42 @@ class PlayerPopup:
             )
             self._set_mode_active(self.loop_btn, loop != "none")
 
+    def _update_volume(self, st):
+        ineffective = st["volume"] is None or self.player in self.volume_ineffective
+        self.volume_mode = resolve_volume_mode(ineffective)
+        if self.volume_mode == "hidden":
+            self.vol_btn.hide()
+            self.vol_scale.hide()
+            if self.info_stack.get_visible_child_name() == "volume":
+                self.info_stack.set_visible_child_name("status")
+            return
+
+        self.vol_btn.show()
+        self.vol_scale.show()
+        if self.volume_mode == "sink":
+            system = wpctl_get_volume()
+            if system is None:
+                self.volume_mode = "hidden"
+                self.vol_btn.hide()
+                self.vol_scale.hide()
+                if self.info_stack.get_visible_child_name() == "volume":
+                    self.info_stack.set_visible_child_name("status")
+                return
+            pct = int(round(system * 100))
+            self.vol_title.set_text(t("menu.system_volume"))
+        else:
+            pct = int(round((st["volume"] or 0.0) * 100))
+            self.vol_title.set_text(t("menu.volume"))
+
+        self.vol_btn.set_sensitive(True)
+        self.vol_btn.set_label(volume_icon(pct))
+        self.vol_value.set_text(f"{pct}%")
+        self.vol_scale.set_sensitive(True)
+        if not self.vol_dragging:
+            self.updating_vol = True
+            self.vol_scale.set_value(pct)
+            self.updating_vol = False
+
     def set_controls_sensitive(self, sensitive):
         for widget in (self.prev_btn, self.play_btn, self.next_btn, self.vol_btn):
             widget.set_sensitive(sensitive)
@@ -1085,6 +1192,13 @@ class PlayerPopup:
         self.loop_btn.hide()
         self.last_track_key = None
         self._cancel_fade()
+        self.volume_mode = "hidden"
+        self.player = ""
+        self.vol_btn.hide()
+        self.vol_scale.hide()
+        if self.volume_readback_id:
+            GLib.source_remove(self.volume_readback_id)
+            self.volume_readback_id = 0
         self.length = None
         self.art_token += 1
         if self.art_url is not None:
@@ -1103,6 +1217,12 @@ class PlayerPopup:
 
     def update_from_state(self, st):
         self.state = st
+        new_player = st["player"] or "MPRIS"
+        if new_player != self.player:
+            if self.volume_readback_id:
+                GLib.source_remove(self.volume_readback_id)
+                self.volume_readback_id = 0
+            self.player = new_player
         self.set_controls_sensitive(True)
         self._update_modes(st)
 
@@ -1122,7 +1242,7 @@ class PlayerPopup:
         self.play_btn.set_tooltip_text(t("menu.pause") if playing else t("menu.play"))
 
         status_ru = {"playing": t("status.playing"), "paused": t("status.paused")}.get(st["status"], t("status.stopped"))
-        player = st["player"] or "MPRIS"
+        player = self.player
         self.status_label.set_text(t("menu.status", player=player, status=status_ru))
         self.status_label.set_tooltip_text(f"{title}\n{st['artist']}")
 
@@ -1142,22 +1262,8 @@ class PlayerPopup:
             self.fade_in()
 
         if st["volume"] is None:
-            self.vol_btn.set_sensitive(False)
-            self.vol_btn.set_label("󰝟")
-            self.vol_value.set_text("—")
-            self.vol_scale.set_sensitive(False)
-            if self.info_stack.get_visible_child_name() == "volume":
-                self.info_stack.set_visible_child_name("status")
-        else:
-            pct = int(round(st["volume"] * 100))
-            self.vol_btn.set_sensitive(True)
-            self.vol_btn.set_label(volume_icon(pct))
-            self.vol_value.set_text(f"{pct}%")
-            self.vol_scale.set_sensitive(True)
-            if not self.vol_dragging:
-                self.updating_vol = True
-                self.vol_scale.set_value(pct)
-                self.updating_vol = False
+            self.volume_ineffective.add(self.player)
+        self._update_volume(st)
 
         length = st["length"] or 0.0
         if self.length is None or abs(length - self.length) > 0.5:
@@ -1232,10 +1338,18 @@ class PlayerPopup:
         if self.info_stack.get_visible_child_name() == "volume":
             self.info_stack.set_visible_child_name("status")
             return
-        if self.state is None or self.state.get("volume") is None:
+        if self.state is None or self.volume_mode == "hidden":
             return
+        if self.volume_mode == "sink":
+            value = wpctl_get_volume()
+            if value is None:
+                return
+        else:
+            value = self.state.get("volume")
+            if value is None:
+                return
         self.updating_vol = True
-        self.vol_scale.set_value(int(round(self.state["volume"] * 100)))
+        self.vol_scale.set_value(int(round(value * 100)))
         self.updating_vol = False
         self.info_stack.set_visible_child_name("volume")
 
@@ -1243,7 +1357,7 @@ class PlayerPopup:
         pct = int(round(scale.get_value()))
         self.vol_value.set_text(f"{pct}%")
         self.vol_btn.set_label(volume_icon(pct))
-        if self.updating_vol:
+        if self.updating_vol or self.volume_mode == "hidden":
             return
         if self.vol_timeout:
             GLib.source_remove(self.vol_timeout)
@@ -1251,8 +1365,39 @@ class PlayerPopup:
 
     def apply_volume(self, pct):
         self.vol_timeout = 0
-        if self.alive:
-            pctl("volume", f"{pct / 100:.2f}")
+        if not self.alive:
+            return False
+        if self.volume_mode == "sink":
+            if wpctl_set_volume(pct / 100):
+                GLib.timeout_add(150, self.refresh_once)
+            return False
+        if self.volume_mode == "hidden":
+            return False
+
+        target = pct / 100
+        player = self.player
+        pctl("volume", "{:.2f}".format(target))
+        if self.volume_readback_id:
+            GLib.source_remove(self.volume_readback_id)
+        self.volume_readback_id = GLib.timeout_add(
+            250, self._verify_player_volume, target, player
+        )
+        return False
+
+    def _verify_player_volume(self, target, player):
+        self.volume_readback_id = 0
+        if not self.alive or self.player != player:
+            return False
+        result = pctl("volume")
+        actual = None
+        if result is not None and result.returncode == 0:
+            try:
+                actual = float(result.stdout.strip())
+            except (TypeError, ValueError):
+                actual = None
+        if not volume_readback_matches(actual, target):
+            self.volume_ineffective.add(player)
+            self.refresh_once()
         return False
 
     def on_volume_press(self, *_args):

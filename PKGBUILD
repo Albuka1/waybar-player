@@ -25,6 +25,7 @@ optdepends=(
     'niri: close the popup when switching workspaces'
     'ttf-jetbrains-mono-nerd: Nerd Font glyphs used by the UI'
     'libnotify: error notifications'
+    'wireplumber: system volume fallback via wpctl'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('eee1678cb44dec1df54841ef19737ee3ba13ca8117950d62619a4ae9de0c9de9')
