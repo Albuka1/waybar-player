@@ -62,3 +62,27 @@ new rule the result is ambiguous: volume is classified only while
 observation therefore must not switch the slider to the system sink. A
 playing-track check is still needed; after a track change the mark is cleared
 and Chromium/YouTube can keep native volume independently.
+
+
+## Ограничения Chromium
+
+Chromium публикует **одну MPRIS-сессию на браузер**. Если в одной вкладке
+играет Яндекс Музыка, а затем запускается YouTube, прежняя сессия не
+возвращается, пока в её вкладке снова не нажать play. `playerctl` видит только
+текущую сессию, поэтому `loop`/`shuffle` могут относиться к YouTube, даже если
+визуально открыта Яндекс Музыка. Это не кеш в `waybar-player`: приложение
+перечитывает поддержку при каждом refresh и скрывает кнопки при ошибке/пустом
+ответе, но не может увидеть неактивную вкладку браузера.
+
+Проверка:
+
+```bash
+playerctl -l
+playerctl -a metadata --format '{{playerName}} | {{status}} | {{title}} | {{mpris:trackid}}'
+playerctl loop
+playerctl shuffle
+```
+
+Если в `playerctl -l` одна строка `chromium.instance...`, значит видна только
+одна сессия. Чтобы вернуть Яндекс Музыку, нажмите play в её вкладке; после
+этого проверьте `playerctl loop` снова.

@@ -28,6 +28,8 @@ English popup; the Russian popup is shown in the Russian section below.
   confirmed no-op falls back to the system sink via `wpctl` (or hides); the
   mark is cleared on track change. Paused/stopped playback stays native.
 - English and Russian UI, plus a JSON-based way to add more languages.
+- Chromium exposes a single MPRIS session per browser: after a second media
+  tab starts, the previous session is returned only when its tab plays again.
 
 ## Requirements (Arch)
 
@@ -321,7 +323,9 @@ PREFIX="$HOME/.local" ./install.sh
 `XDG_CACHE_HOME`/`~/.cache` и `WAYBAR_PLAYER_ART_DIRS`; проверяются realpath,
 размер ≤ 8 МБ и сигнатура PNG/JPEG/WebP/GIF.
 
-Добавить язык: скопировать `locales/en.json` в `locales/xx.json`, перевести
+Chromium публикует одну MPRIS-сессию на браузер: после запуска второго
+медиа в другой вкладке прежняя сессия возвращается только после play в её
+вкладке. Добавить язык: скопировать `locales/en.json` в `locales/xx.json`, перевести
 значения, сохранить ключи и `{плейсхолдеры}`, затем снова запустить
 `./install.sh` и задать `WAYBAR_PLAYER_LANG=xx`.
 
