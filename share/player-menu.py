@@ -42,7 +42,7 @@ SEP = "\x1f"
 FMT = SEP.join([
     "{{status}}", "{{playerName}}", "{{title}}", "{{artist}}",
     "{{album}}", "{{mpris:artUrl}}", "{{volume}}",
-    "{{position}}", "{{mpris:length}}",
+    "{{position}}", "{{mpris:length}}", "{{mpris:trackid}}", "{{xesam:url}}",
 ])
 CACHE_DIR = os.environ.get("PM_CACHE") or os.path.join(
     os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
@@ -65,6 +65,9 @@ DEFAULT_ACCENT = "#ff8c00"
 ACCENT_MODE = os.environ.get("WAYBAR_PLAYER_ACCENT", "cover").strip().lower()
 if ACCENT_MODE not in ("cover", "fixed"):
     ACCENT_MODE = "cover"
+VOLUME_MODE = os.environ.get("WAYBAR_PLAYER_VOLUME_MODE", "auto").strip().lower()
+if VOLUME_MODE not in ("auto", "player", "sink", "hide"):
+    VOLUME_MODE = "auto"
 VOLUME_FALLBACK = os.environ.get("WAYBAR_PLAYER_VOLUME_FALLBACK", "sink").strip().lower()
 if VOLUME_FALLBACK not in ("sink", "hide"):
     VOLUME_FALLBACK = "sink"
@@ -270,10 +273,11 @@ def get_state():
         return None
 
     parts = line.split(SEP)
-    if len(parts) < 9:
-        parts += [""] * (9 - len(parts))
+    if len(parts) < 11:
+        parts += [""] * (11 - len(parts))
 
-    status, player, title, artist, album, art_url, vol_raw, pos_raw, len_raw = parts[:9]
+    (status, player, title, artist, album, art_url, vol_raw, pos_raw,
+     len_raw, track_id, track_url) = parts[:11]
     try:
         volume = max(0.0, min(1.0, float(vol_raw))) if vol_raw else None
     except (TypeError, ValueError):
@@ -295,6 +299,8 @@ def get_state():
         "length": length,
         "shuffle": parse_shuffle(_read_mode("shuffle")),
         "loop": parse_loop(_read_mode("loop")),
+        "track_id": track_id,
+        "track_url": track_url,
     }
 
 
@@ -525,8 +531,32 @@ def volume_readback_matches(actual, target, tolerance=0.03):
     return actual is not None and abs(actual - target) <= tolerance
 
 
-def resolve_volume_mode(ineffective, fallback=None, have_wpctl=None):
-    if not ineffective:
+def volume_track_key(state):
+    player = state.get("player") or ""
+    track = (
+        state.get("track_id")
+        or state.get("track_url")
+        or "{}|{}".format(state.get("title") or "", state.get("artist") or "")
+    )
+    return "{}|{}".format(player, track)
+
+
+def volume_check_marks(status, set_ok, read_value, target, tolerance=0.03):
+    if status != "playing" or not set_ok or read_value is None:
+        return False
+    return not volume_readback_matches(read_value, target, tolerance)
+
+
+def volume_mode_for(mode, status, marked, fallback=None, have_wpctl=None):
+    if mode == "player":
+        return "player"
+    if mode == "sink":
+        have_wpctl = HAVE_WPCTL if have_wpctl is None else have_wpctl
+        return "sink" if have_wpctl else "hidden"
+    if mode == "hide":
+        return "hidden"
+    # auto: native unless the current playing track is known to ignore volume.
+    if status != "playing" or not marked:
         return "player"
     fallback = VOLUME_FALLBACK if fallback is None else fallback
     have_wpctl = HAVE_WPCTL if have_wpctl is None else have_wpctl
@@ -633,7 +663,8 @@ class PlayerPopup:
         self.vol_dragging = False
         self.updating_vol = False
         self.volume_readback_id = 0
-        self.volume_ineffective = set()
+        self.volume_key = None
+        self.volume_ineffective_key = None
         self.volume_mode = "player"
         self.player = ""
 
@@ -1129,8 +1160,13 @@ class PlayerPopup:
             self._set_mode_active(self.loop_btn, loop != "none")
 
     def _update_volume(self, st):
-        ineffective = st["volume"] is None or self.player in self.volume_ineffective
-        self.volume_mode = resolve_volume_mode(ineffective)
+        marked = (
+            self.volume_ineffective_key is not None
+            and self.volume_ineffective_key == self.volume_key
+        )
+        self.volume_mode = volume_mode_for(VOLUME_MODE, st["status"], marked)
+        if st["volume"] is None and self.volume_mode == "player":
+            self.volume_mode = "hidden"
         if self.volume_mode == "hidden":
             self.vol_btn.hide()
             self.vol_scale.hide()
@@ -1194,6 +1230,8 @@ class PlayerPopup:
         self._cancel_fade()
         self.volume_mode = "hidden"
         self.player = ""
+        self.volume_key = None
+        self.volume_ineffective_key = None
         self.vol_btn.hide()
         self.vol_scale.hide()
         if self.volume_readback_id:
@@ -1223,6 +1261,13 @@ class PlayerPopup:
                 GLib.source_remove(self.volume_readback_id)
                 self.volume_readback_id = 0
             self.player = new_player
+        new_volume_key = volume_track_key(st)
+        if new_volume_key != self.volume_key:
+            self.volume_key = new_volume_key
+            self.volume_ineffective_key = None
+            if self.volume_readback_id:
+                GLib.source_remove(self.volume_readback_id)
+                self.volume_readback_id = 0
         self.set_controls_sensitive(True)
         self._update_modes(st)
 
@@ -1261,8 +1306,6 @@ class PlayerPopup:
         if track_changed:
             self.fade_in()
 
-        if st["volume"] is None:
-            self.volume_ineffective.add(self.player)
         self._update_volume(st)
 
         length = st["length"] or 0.0
@@ -1376,17 +1419,21 @@ class PlayerPopup:
 
         target = pct / 100
         player = self.player
-        pctl("volume", "{:.2f}".format(target))
+        result = pctl("volume", "{:.2f}".format(target))
+        set_ok = result is not None and result.returncode == 0
         if self.volume_readback_id:
             GLib.source_remove(self.volume_readback_id)
-        self.volume_readback_id = GLib.timeout_add(
-            250, self._verify_player_volume, target, player
-        )
+            self.volume_readback_id = 0
+        if self.state is not None and self.state["status"] == "playing":
+            self.volume_readback_id = GLib.timeout_add(
+                250, self._verify_player_volume, target, player, set_ok, self.volume_key
+            )
         return False
 
-    def _verify_player_volume(self, target, player):
+    def _verify_player_volume(self, target, player, set_ok, key):
         self.volume_readback_id = 0
-        if not self.alive or self.player != player:
+        if (not self.alive or self.player != player
+                or self.volume_key != key or self.state is None):
             return False
         result = pctl("volume")
         actual = None
@@ -1395,8 +1442,8 @@ class PlayerPopup:
                 actual = float(result.stdout.strip())
             except (TypeError, ValueError):
                 actual = None
-        if not volume_readback_matches(actual, target):
-            self.volume_ineffective.add(player)
+        if volume_check_marks(self.state["status"], set_ok, actual, target):
+            self.volume_ineffective_key = self.volume_key
             self.refresh_once()
         return False
 

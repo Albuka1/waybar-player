@@ -200,8 +200,35 @@ def test_volume_readback_matches():
     assert not menu.volume_readback_matches(None, 0.30)
 
 
-def test_resolve_volume_mode():
-    assert menu.resolve_volume_mode(False) == "player"
-    assert menu.resolve_volume_mode(True, "sink", True) == "sink"
-    assert menu.resolve_volume_mode(True, "sink", False) == "hidden"
-    assert menu.resolve_volume_mode(True, "hide", True) == "hidden"
+def test_volume_track_key_preference():
+    base = {"player": "chromium", "title": "Title", "artist": "Artist"}
+    assert menu.volume_track_key(dict(base, track_id="track-a")) == "chromium|track-a"
+    assert menu.volume_track_key(dict(base, track_url="https://x/y")) == "chromium|https://x/y"
+    assert menu.volume_track_key(base) == "chromium|Title|Artist"
+
+
+def test_volume_mode_for_fixed_modes():
+    assert menu.volume_mode_for("player", "playing", True) == "player"
+    assert menu.volume_mode_for("sink", "paused", False, have_wpctl=True) == "sink"
+    assert menu.volume_mode_for("sink", "paused", False, have_wpctl=False) == "hidden"
+    assert menu.volume_mode_for("hide", "playing", False) == "hidden"
+
+
+def test_volume_mode_for_pause_and_track_change():
+    key_a = menu.volume_track_key({"player": "chromium", "track_id": "A"})
+    key_b = menu.volume_track_key({"player": "chromium", "track_id": "B"})
+    assert key_a != key_b
+    # A was marked ineffective; B is a different track and must be native.
+    assert menu.volume_mode_for("auto", "playing", key_a == key_b, "sink", True) == "player"
+    assert menu.volume_mode_for("auto", "playing", key_a == key_a, "sink", True) == "sink"
+    # Pausing behaves as native even when the track was marked.
+    assert menu.volume_mode_for("auto", "paused", True, "sink", True) == "player"
+    assert menu.volume_mode_for("auto", "playing", True, "hide", True) == "hidden"
+
+
+def test_volume_check_marks_only_for_playing_clear_result():
+    assert menu.volume_check_marks("playing", True, 1.0, 0.3)
+    assert not menu.volume_check_marks("paused", True, 1.0, 0.3)
+    assert not menu.volume_check_marks("playing", False, 1.0, 0.3)
+    assert not menu.volume_check_marks("playing", True, None, 0.3)
+    assert not menu.volume_check_marks("playing", True, 0.3, 0.3)
