@@ -1,226 +1,293 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
 #
-# player-status.sh — источник данных для Waybar-модуля custom/player.
+# waybar-player-status — JSON-источник для Waybar custom/player.
 #
-# Скрипт работает в бесконечном цикле: Waybar читает stdout построчно и
-# обновляет модуль на каждой строке (в конфиге НЕ задан interval, поэтому
-# Waybar считает скрипт "самозацикленным" и не перезапускает его).
+# Один долгоживущий процесс:
+#   * отдельный поток читает `playerctl --follow metadata --format ...`;
+#   * главный цикл двигает кадры диска и бегущую строку по таймеру;
+#   * при отсутствии плеера playerctl перезапускается раз в секунду.
 #
-# Формат строки — JSON: {"text": "...", "tooltip": "...", "class": "...", "percentage": N}
-# В конфиге включён "escape": true, поэтому Waybar сам экранирует разметку
-# (символы &, <, > в названиях треков не ломают Pango-разметку).
+# Waybar читает stdout построчно, поэтому каждая строка — компактный JSON:
+# {"text":"...","tooltip":"...","class":"...","percentage":N}
 
-set -uo pipefail
+import json
+import os
+import queue
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
 
-# UTF-8 обязателен: ${#str} и ${str:off:len} должны считать символы, а не байты.
-export LC_ALL=C.UTF-8
+SEP = "\x1f"
+FMT = SEP.join([
+    "{{status}}", "{{playerName}}", "{{title}}", "{{artist}}",
+    "{{album}}", "{{mpris:artUrl}}", "{{volume}}",
+])
 
-# \x1f (unit separator) — разделитель, который не является IFS-пробелом,
-# поэтому пустые поля (например, отсутствующий исполнитель) не "схлопываются".
-readonly SEP=$'\x1f'
-readonly FMT="{{status}}${SEP}{{playerName}}${SEP}{{title}}${SEP}{{artist}}${SEP}{{album}}${SEP}{{mpris:artUrl}}${SEP}{{volume}}"
+FRAMES = ("◐", "◓", "◑", "◒")
+ICON_PAUSE = "󰏤"
+ICON_IDLE = "󰎆"
 
-readonly FRAMES=(◐ ◓ ◑ ◒)
-readonly ICON_PAUSE="󰏤"
-readonly ICON_IDLE="󰎆"
+PLAY_DELAY = 0.2       # кадр диска и шаг бегущей строки (строка — раз в 2 тика)
+IDLE_DELAY = 1.0       # обновление на паузе/остановке/без плеера
+RETRY_DELAY = 1.0      # перезапуск playerctl без игрока
 
-TITLE_WIDTH=${WAYBAR_PLAYER_TITLE_WIDTH:-30}  # сколько символов трека показывать на панели
-[[ $TITLE_WIDTH =~ ^[0-9]+$ ]] || TITLE_WIDTH=30
-(( TITLE_WIDTH < 1 )) && TITLE_WIDTH=30
-readonly TITLE_WIDTH
-readonly PLAY_DELAY=0.2      # период анимации/бегущей строки при воспроизведении
-readonly IDLE_DELAY=1.0      # период опроса на паузе/остановке/без плеера
-readonly PCTL_TIMEOUT=1      # жёсткий таймаут на один вызов playerctl
 
-json_escape() {
-    local s=$1
-    s=${s//\\/\\\\}
-    s=${s//\"/\\\"}
-    s=${s//$'\n'/\\n}
-    s=${s//$'\r'/\\r}
-    s=${s//$'\t'/\\t}
-    s=${s//$'\b'/\\b}
-    s=${s//$'\f'/\\f}
-    printf '%s' "$s"
-}
+def env_int(name, default, minimum=1):
+    try:
+        value = int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return max(minimum, value)
 
-# Убираем переводы строк/табы из метаданных, чтобы строка JSON осталась одной строкой.
-clean_field() {
-    local s=$1
-    s=${s//$'\n'/ }
-    s=${s//$'\r'/ }
-    s=${s//$'\t'/ }
-    s=${s//"$SEP"/ }
-    printf '%s' "$s"
-}
 
-truncate_title() {
-    local s=$1 width=$2
-    if (( ${#s} > width )); then
-        printf '%s…' "${s:0:width-1}"
-    else
-        printf '%s' "$s"
-    fi
-}
+TITLE_WIDTH = env_int("WAYBAR_PLAYER_TITLE_WIDTH", 30, 1)
 
-# Бегущая строка: окно шириной width символов, сдвигающееся по кругу.
-marquee() {
-    local s=$1 off=$2 width=$3
-    # Короткий заголовок не дублируем и не прокручиваем.
-    if (( ${#s} <= width )); then
-        printf '%s' "$s"
-        return
-    fi
-    local gap="   •   "
-    local loop="${s}${gap}"
-    local len=${#loop}
-    (( len == 0 )) && return
-    local start=$(( off % len ))
-    local out="${loop:start:width}"
-    if (( ${#out} < width )); then
-        out+="${loop:0:width-${#out}}"
-    fi
-    printf '%s' "$out"
-}
 
-# playerctl отдаёт громкость как float (0.0…1.0). Считаем проценты без внешних утилит.
-volume_percent() {
-    local v=$1 int frac
-    [[ $v =~ ^([0-9]+)(\.([0-9]+))?$ ]] || return 1
-    int=$((10#${BASH_REMATCH[1]}))
-    frac="${BASH_REMATCH[3]:-}"
-    frac="${frac}00"
-    printf '%d' $(( int * 100 + 10#${frac:0:2} ))
-}
+def clean_field(value):
+    if not value:
+        return ""
+    return (value.replace("\n", " ").replace("\r", " ")
+            .replace("\t", " ").replace(SEP, " "))
 
-status_ru() {
-    case $1 in
-        playing) printf 'Играет' ;;
-        paused)  printf 'Пауза' ;;
-        *)       printf 'Остановлен' ;;
-    esac
-}
 
-prev_key=""
-offset=0
-tick=0
+def status_ru(status):
+    if status == "playing":
+        return "Играет"
+    if status == "paused":
+        return "Пауза"
+    return "Остановлен"
 
-while :; do
-    meta=""
-    status=""
-    player=""
-    title=""
-    artist=""
-    album=""
-    art_url=""
-    volume=""
 
-    if meta=$(timeout "$PCTL_TIMEOUT" playerctl metadata --format "$FMT" 2>/dev/null) && [[ -n $meta ]]; then
-        IFS="$SEP" read -r status player title artist album art_url volume <<<"$meta"
-    else
-        meta=""
-    fi
+def truncate_title(text, width):
+    if len(text) > width:
+        return text[: width - 1] + "…"
+    return text
 
-    title=$(clean_field "${title:-}")
-    artist=$(clean_field "${artist:-}")
-    album=$(clean_field "${album:-}")
-    art_url=$(clean_field "${art_url:-}")
-    player=$(clean_field "${player:-}")
-    volume=$(clean_field "${volume:-}")
 
-    class="stopped"
-    vol_pct=""
+def marquee(text, offset, width):
+    """Окно шириной width, циклически сдвинутое на offset."""
+    if len(text) <= width:
+        return text
+    separator = "   •   "
+    loop = text + separator
+    if not loop:
+        return ""
+    start = offset % len(loop)
+    out = loop[start:start + width]
+    if len(out) < width:
+        out += loop[: width - len(out)]
+    return out
 
-    if [[ -n $volume ]] && vol_pct=$(volume_percent "$volume"); then
-        :
-    else
-        vol_pct=""
-    fi
 
-    if [[ -z $meta ]]; then
-        # Нет ни одного MPRIS-плеера (или playerctl не ответил за PCTL_TIMEOUT).
-        status_norm=""
-        song=""
-        text="$ICON_IDLE"
-        tip="Нет активного MPRIS-плеера"
-        tip+=$'\n\n'"ЛКМ — открыть меню"
-    else
-        status_norm=${status,,}
-        [[ -n $status_norm ]] || status_norm="stopped"
+def volume_percent(raw):
+    """Повторяет старую bash-логику: целые проценты, две цифры дроби."""
+    if not raw:
+        return None
+    match = re.fullmatch(r"([0-9]+)(?:\.([0-9]+))?", raw)
+    if not match:
+        return None
+    fraction = (match.group(2) or "") + "00"
+    return int(match.group(1)) * 100 + int(fraction[:2])
 
-        if [[ -n $title ]]; then
-            song=$title
-        elif [[ -n $artist ]]; then
-            song=$artist
-        elif [[ -n $player ]]; then
-            song=$player
-        else
-            song="Без названия"
-        fi
 
-        case $status_norm in
-            playing)
-                class="playing"
-                key="${player}|${title}|${artist}"
-                if [[ $key != "$prev_key" ]]; then
-                    prev_key=$key
-                    offset=0
-                fi
-                display=$(marquee "$song" "$offset" "$TITLE_WIDTH")
-                text="${FRAMES[$((tick % 4))]}  ${display}"
-                ;;
+def parse_metadata_line(line):
+    if not line:
+        return None
+    line = line.rstrip("\n")
+    if not line:
+        return None
+    parts = line.split(SEP)
+    if len(parts) < 7:
+        parts += [""] * (7 - len(parts))
+    status, player, title, artist, album, art_url, volume = parts[:7]
+    return {
+        "status": status.strip().lower(),
+        "player": clean_field(player),
+        "title": clean_field(title),
+        "artist": clean_field(artist),
+        "album": clean_field(album),
+        "art_url": clean_field(art_url),
+        "volume": clean_field(volume),
+    }
 
-            paused)
-                class="paused"
-                offset=0
-                display=$(truncate_title "$song" "$TITLE_WIDTH")
-                text="${ICON_PAUSE}  ${display}"
-                ;;
 
-            *)
-                class="stopped"
-                offset=0
-                if [[ -n $title ]]; then
-                    text="${ICON_PAUSE}  $(truncate_title "$song" "$TITLE_WIDTH")"
-                else
-                    text="${ICON_PAUSE}  Остановлено"
-                fi
-                ;;
-        esac
+def track_key(state):
+    return "{}|{}|{}".format(state["player"], state["title"], state["artist"])
 
-        if [[ $status_norm == "stopped" && -z $title ]]; then
-            tip="Остановлено"
-        else
-            tip="$song"
-            [[ -n $artist ]] && tip+=$'\n'"$artist"
-            [[ -n $album ]] && tip+=$'\n'"$album"
-        fi
-        [[ -n $player ]] && tip+=$'\n\n'"Плеер: $player"
-        [[ -n $vol_pct ]] && tip+=$'\n'"Громкость: ${vol_pct}%"
-        tip+=$'\n'"Состояние: $(status_ru "$status_norm")"
-        tip+=$'\n\n'"ЛКМ — меню • СКМ — предыдущий • ПКМ — пауза/плей"
-        tip+=$'\n'"Колесо — громкость"
-    fi
 
-    esc_text=$(json_escape "$text")
-    esc_tip=$(json_escape "$tip")
-    if [[ -n $vol_pct ]]; then
-        printf '{"text":"%s","tooltip":"%s","class":"%s","percentage":%s}\n' \
-            "$esc_text" "$esc_tip" "$class" "$vol_pct"
-    else
-        printf '{"text":"%s","tooltip":"%s","class":"%s"}\n' \
-            "$esc_text" "$esc_tip" "$class"
-    fi
+def song_title(state):
+    return state["title"] or state["artist"] or state["player"] or "Без названия"
 
-    if [[ $class == "playing" ]]; then
-        tick=$((tick + 1))
-        # Диск крутится каждые 0.2 с, а бегущая строка сдвигается вдвое медленнее,
-        # чтобы её можно было прочитать (2.5 символа в секунду).
-        if (( tick % 2 == 0 )); then
-            offset=$((offset + 1))
-        fi
-        sleep "$PLAY_DELAY"
-    else
-        sleep "$IDLE_DELAY"
-    fi
-done
+
+def build_status(state, tick, offset, title_width=TITLE_WIDTH):
+    """Возвращает (text, tooltip, class, percentage|None)."""
+    if state is None:
+        return (
+            ICON_IDLE,
+            "Нет активного MPRIS-плеера\n\nЛКМ — открыть меню",
+            "stopped",
+            None,
+        )
+
+    status = state["status"] or "stopped"
+    player = state["player"]
+    title = state["title"]
+    artist = state["artist"]
+    album = state["album"]
+    song = song_title(state)
+    pct = volume_percent(state["volume"])
+
+    if status == "playing":
+        cls = "playing"
+        text = "{}  {}".format(FRAMES[tick % len(FRAMES)],
+                               marquee(song, offset, title_width))
+    elif status == "paused":
+        cls = "paused"
+        text = "{}  {}".format(ICON_PAUSE, truncate_title(song, title_width))
+    else:
+        cls = "stopped"
+        if title:
+            text = "{}  {}".format(ICON_PAUSE, truncate_title(song, title_width))
+        else:
+            text = "{}  Остановлено".format(ICON_PAUSE)
+
+    if status == "stopped" and not title:
+        tip = "Остановлено"
+    else:
+        tip = song
+        if artist:
+            tip += "\n" + artist
+        if album:
+            tip += "\n" + album
+    if player:
+        tip += "\n\nПлеер: " + player
+    if pct is not None:
+        tip += "\nГромкость: {}%".format(pct)
+    tip += "\nСостояние: " + status_ru(status)
+    tip += "\n\nЛКМ — меню • СКМ — предыдущий • ПКМ — пауза/плей"
+    tip += "\nКолесо — громкость"
+
+    return text, tip, cls, pct
+
+
+def status_json(state, tick, offset, title_width=TITLE_WIDTH):
+    text, tooltip, cls, pct = build_status(state, tick, offset, title_width)
+    payload = {"text": text, "tooltip": tooltip, "class": cls}
+    if pct is not None:
+        payload["percentage"] = pct
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+_current_proc = None
+
+
+def _stop(signum, frame):
+    del signum, frame
+    proc = _current_proc
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+    sys.exit(0)
+
+
+def reader_loop(events):
+    """Читает playerctl --follow и складывает состояния в очередь."""
+    global _current_proc
+    while True:
+        try:
+            proc = subprocess.Popen(
+                ["playerctl", "--follow", "metadata", "--format", FMT],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+        except OSError:
+            events.put(None)
+            time.sleep(RETRY_DELAY)
+            continue
+
+        _current_proc = proc
+        try:
+            for line in proc.stdout:
+                state = parse_metadata_line(line)
+                if state is not None:
+                    events.put(state)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+            _current_proc = None
+
+        events.put(None)
+        time.sleep(RETRY_DELAY)
+
+
+def main():
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+
+    events = queue.Queue()
+    threading.Thread(target=reader_loop, args=(events,), daemon=True).start()
+
+    state = None
+    prev_key = None
+    tick = 0
+    offset = 0
+    next_tick = time.monotonic() + 0.1
+
+    while True:
+        timeout = max(0.0, next_tick - time.monotonic())
+        changed = False
+        try:
+            item = events.get(timeout=timeout)
+        except queue.Empty:
+            item = ...
+        else:
+            while True:
+                if item is None:
+                    if state is not None:
+                        state = None
+                        prev_key = None
+                        offset = 0
+                        changed = True
+                else:
+                    key = track_key(item)
+                    if key != prev_key:
+                        prev_key = key
+                        offset = 0
+                    state = item
+                    changed = True
+                try:
+                    item = events.get_nowait()
+                except queue.Empty:
+                    break
+
+        now = time.monotonic()
+        due = now >= next_tick
+        if state is None or state["status"] != "playing":
+            offset = 0
+        if changed or due:
+            print(status_json(state, tick, offset), flush=True)
+
+        if due:
+            if state is not None and state["status"] == "playing":
+                tick += 1
+                if tick % 2 == 0:
+                    offset += 1
+                next_tick = now + PLAY_DELAY
+            else:
+                offset = 0
+                next_tick = now + IDLE_DELAY
+
+
+if __name__ == "__main__":
+    main()
