@@ -20,5 +20,14 @@
   "status.volume": "Volume: {pct}%",
   "status.state": "State: {status}",
   "status.hints": "LMB — menu • MMB — previous • RMB — pause/play",
-  "status.scroll_hint": "Wheel — volume"
+  "status.scroll_hint": "Wheel — volume",
+  "menu.shuffle": "Shuffle",
+  "menu.loop": "Repeat",
+  "menu.shuffle_status": "Shuffle: {state}",
+  "menu.loop_status": "Repeat: {state}",
+  "mode.on": "on",
+  "mode.off": "off",
+  "mode.none": "off",
+  "mode.track": "track",
+  "mode.playlist": "playlist"
 }

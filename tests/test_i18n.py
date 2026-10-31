@@ -30,6 +30,15 @@ EXPECTED_RU = {
     "status.state": "Состояние: {status}",
     "status.hints": "ЛКМ — меню • СКМ — предыдущий • ПКМ — пауза/плей",
     "status.scroll_hint": "Колесо — громкость",
+    "menu.shuffle": "Перемешивание",
+    "menu.loop": "Повтор",
+    "menu.shuffle_status": "Перемешивание: {state}",
+    "menu.loop_status": "Повтор: {state}",
+    "mode.on": "вкл",
+    "mode.off": "выкл",
+    "mode.none": "выкл",
+    "mode.track": "трек",
+    "mode.playlist": "плейлист",
 }
 
 
@@ -56,7 +65,7 @@ def test_catalogs_have_same_keys_and_placeholders():
     en = _load("en")
     ru = _load("ru")
     assert set(en) == set(ru)
-    assert len(en) == 22
+    assert len(en) == 31
     for key in en:
         assert _placeholders(en[key]) == _placeholders(ru[key]), key
 

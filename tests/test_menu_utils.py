@@ -123,3 +123,36 @@ def test_fetch_art_rejects_non_image_in_tmp():
         assert menu.fetch_art(path.as_uri()) is None
     finally:
         shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("On", "on"), ("off", "off"), ("", None), ("bogus", None)],
+)
+def test_parse_shuffle(value, expected):
+    assert menu.parse_shuffle(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("None", "none"),
+        ("Track", "track"),
+        ("Playlist", "playlist"),
+        ("", None),
+        ("bogus", None),
+    ],
+)
+def test_parse_loop(value, expected):
+    assert menu.parse_loop(value) == expected
+
+
+def test_loop_cycle_and_commands():
+    assert menu.next_loop("none") == "track"
+    assert menu.next_loop("track") == "playlist"
+    assert menu.next_loop("playlist") == "none"
+    assert menu.next_loop(None) is None
+    assert menu.loop_command("none") == "None"
+    assert menu.loop_command("track") == "Track"
+    assert menu.loop_command("playlist") == "Playlist"
+    assert menu.loop_command(None) is None

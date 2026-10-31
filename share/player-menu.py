@@ -146,6 +146,14 @@ button:disabled {
     background-color: #ff8c00;
     color: #0d0d0d;
 }
+.mode-btn {
+    font-size: 18px;
+    padding: 2px 0;
+    border-radius: 6px;
+}
+.mode-btn.active {
+    color: #ff8c00;
+}
 .icon-btn {
     font-size: 14px;
     padding: 0 4px;
@@ -274,7 +282,38 @@ def get_state():
         "volume": volume,
         "position": to_seconds(pos_raw) or 0.0,
         "length": length,
+        "shuffle": parse_shuffle(_read_mode("shuffle")),
+        "loop": parse_loop(_read_mode("loop")),
     }
+
+
+def parse_shuffle(value):
+    text = (value or "").strip().lower()
+    if text in ("on", "off"):
+        return text
+    return None
+
+
+def parse_loop(value):
+    text = (value or "").strip().lower()
+    if text in ("none", "track", "playlist"):
+        return text
+    return None
+
+
+def next_loop(value):
+    return {"none": "track", "track": "playlist", "playlist": "none"}.get(value)
+
+
+def loop_command(value):
+    return {"none": "None", "track": "Track", "playlist": "Playlist"}.get(value)
+
+
+def _read_mode(command):
+    res = pctl(command)
+    if res is None or res.returncode != 0:
+        return None
+    return res.stdout.strip()
 
 
 def cleanup_cover_cache(max_age_days=CACHE_MAX_AGE_DAYS):
@@ -584,12 +623,20 @@ class PlayerPopup:
         self.prev_btn = self._control("󰒮", t("menu.prev"), self.on_prev)
         self.play_btn = self._control("󰐊", t("menu.play_pause"), self.on_play_pause)
         self.next_btn = self._control("󰒭", t("menu.next"), self.on_next)
+        self.shuffle_btn = self._control("󰒝", t("menu.shuffle"), self.on_shuffle)
+        self.loop_btn = self._control("󰑖", t("menu.loop"), self.on_loop)
         self.play_btn.set_name("play-btn")
         self.prev_btn.set_size_request(52, 46)
         self.play_btn.set_size_request(56, 56)
         self.next_btn.set_size_request(52, 46)
+        for btn in (self.shuffle_btn, self.loop_btn):
+            btn.get_style_context().add_class("mode-btn")
+            btn.set_size_request(30, 46)
+            btn.set_no_show_all(True)
+            btn.hide()
 
-        for btn in (self.prev_btn, self.play_btn, self.next_btn):
+        for btn in (self.shuffle_btn, self.prev_btn, self.play_btn,
+                    self.next_btn, self.loop_btn):
             controls.pack_start(btn, False, False, 0)
 
         self.card.pack_start(controls, False, False, 0)
@@ -852,6 +899,36 @@ class PlayerPopup:
         else:
             self.cover.set_from_pixbuf(pb)
 
+    def _set_mode_active(self, button, active):
+        ctx = button.get_style_context()
+        if active:
+            ctx.add_class("active")
+        else:
+            ctx.remove_class("active")
+
+    def _update_modes(self, st):
+        shuffle = st.get("shuffle")
+        if shuffle is None:
+            self.shuffle_btn.hide()
+        else:
+            self.shuffle_btn.show()
+            self.shuffle_btn.set_label("󰒝")
+            self.shuffle_btn.set_tooltip_text(
+                t("menu.shuffle_status", state=t("mode." + shuffle))
+            )
+            self._set_mode_active(self.shuffle_btn, shuffle == "on")
+
+        loop = st.get("loop")
+        if loop is None:
+            self.loop_btn.hide()
+        else:
+            self.loop_btn.show()
+            self.loop_btn.set_label("󰑘" if loop == "track" else "󰑖")
+            self.loop_btn.set_tooltip_text(
+                t("menu.loop_status", state=t("mode." + loop))
+            )
+            self._set_mode_active(self.loop_btn, loop != "none")
+
     def set_controls_sensitive(self, sensitive):
         for widget in (self.prev_btn, self.play_btn, self.next_btn, self.vol_btn):
             widget.set_sensitive(sensitive)
@@ -876,6 +953,8 @@ class PlayerPopup:
         self.vol_scale.set_sensitive(False)
         self.status_label.set_text(t("player.no_active"))
         self.info_stack.set_visible_child_name("status")
+        self.shuffle_btn.hide()
+        self.loop_btn.hide()
         self.length = None
         self.art_token += 1
         if self.art_url is not None:
@@ -895,6 +974,7 @@ class PlayerPopup:
     def update_from_state(self, st):
         self.state = st
         self.set_controls_sensitive(True)
+        self._update_modes(st)
 
         title = st["title"] or st["artist"] or st["player"] or t("status.no_title")
         self.title_label.set_text(title)
@@ -995,6 +1075,19 @@ class PlayerPopup:
 
     def on_next(self, *_args):
         self.run_action("next")
+
+    def on_shuffle(self, *_args):
+        if self.state is None or self.state.get("shuffle") is None:
+            return
+        self.run_action("shuffle", "Toggle")
+
+    def on_loop(self, *_args):
+        if self.state is None:
+            return
+        target = next_loop(self.state.get("loop"))
+        command = loop_command(target)
+        if command:
+            self.run_action("loop", command)
 
     # --- громкость ----------------------------------------------------------
 
