@@ -32,7 +32,8 @@ ICON_IDLE = "󰎆"
 
 PLAY_DELAY = 0.2       # кадр диска и шаг бегущей строки (строка — раз в 2 тика)
 IDLE_DELAY = 1.0       # обновление на паузе/остановке/без плеера
-RETRY_DELAY = 1.0      # перезапуск playerctl без игрока
+RETRY_BASE = 1.0       # первый перезапуск playerctl после выхода
+RETRY_MAX = 5.0        # максимальная задержка экспоненциального backoff
 
 
 def env_int(name, default, minimum=1):
@@ -195,10 +196,23 @@ def _stop(signum, frame):
     sys.exit(0)
 
 
-def reader_loop(events):
+def retry_delay(attempt):
+    """1, 2, 4, 5, 5, ... секунд — без бесконечного спама процессов."""
+    return min(RETRY_MAX, RETRY_BASE * (2 ** attempt))
+
+
+def _wait_retry(delay, stop_event):
+    if stop_event is not None:
+        return stop_event.wait(delay)
+    time.sleep(delay)
+    return False
+
+
+def reader_loop(events, stop_event=None):
     """Читает playerctl --follow и складывает состояния в очередь."""
     global _current_proc
-    while True:
+    attempt = 0
+    while stop_event is None or not stop_event.is_set():
         try:
             proc = subprocess.Popen(
                 ["playerctl", "--follow", "metadata", "--format", FMT],
@@ -211,9 +225,13 @@ def reader_loop(events):
             )
         except OSError:
             events.put(None)
-            time.sleep(RETRY_DELAY)
+            delay = retry_delay(attempt)
+            attempt += 1
+            if _wait_retry(delay, stop_event):
+                break
             continue
 
+        attempt = 0
         _current_proc = proc
         try:
             for line in proc.stdout:
@@ -230,7 +248,10 @@ def reader_loop(events):
             _current_proc = None
 
         events.put(None)
-        time.sleep(RETRY_DELAY)
+        delay = retry_delay(attempt)
+        attempt += 1
+        if _wait_retry(delay, stop_event):
+            break
 
 
 def main():

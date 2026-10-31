@@ -1,4 +1,8 @@
 import json
+import os
+import queue
+import threading
+import time
 
 from helpers import load_module
 
@@ -96,3 +100,50 @@ def test_parse_metadata_line():
     assert state["player"] == "chromium"
     assert state["title"] == "Title"
     assert state["volume"] == "0.5"
+
+
+def test_follow_format_requests_volume():
+    assert "{{volume}}" in status.FMT
+    assert "{{status}}" in status.FMT
+
+
+def test_volume_change_changes_percentage():
+    low = json.loads(status.status_json(_state(volume="0.10"), 0, 0, 30))
+    high = json.loads(status.status_json(_state(volume="0.80"), 0, 0, 30))
+    assert low["percentage"] == 10
+    assert high["percentage"] == 80
+
+
+def test_retry_delay_is_exponential_and_capped():
+    assert status.retry_delay(0) == 1.0
+    assert status.retry_delay(1) == 2.0
+    assert status.retry_delay(2) == 4.0
+    assert status.retry_delay(3) == 5.0
+    assert status.retry_delay(10) == 5.0
+
+
+def test_reader_loop_restarts_after_follow_exit(tmp_path, monkeypatch):
+    counter = tmp_path / "starts.txt"
+    fake = tmp_path / "playerctl"
+    fake.write_text(
+        "#!/bin/sh\nprintf 'x\\n' >> \"{}\"\nexit 1\n".format(counter),
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setattr(status, "RETRY_BASE", 0.01)
+
+    events = queue.Queue()
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=status.reader_loop, args=(events, stop), daemon=True
+    )
+    thread.start()
+    time.sleep(0.12)
+    stop.set()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert counter.exists()
+    assert len(counter.read_text(encoding="utf-8").splitlines()) >= 2
+    assert not events.empty()
