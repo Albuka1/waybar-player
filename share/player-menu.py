@@ -647,7 +647,7 @@ class PlayerPopup:
         # Закрываем меню при смене воркспейса. Polling дешевле и надёжнее
         # долгоживущего niri event-stream (его пришлось бы отдельно убивать).
         self.check_workspace()
-        self.ws_timer = GLib.timeout_add(200, self.check_workspace)
+        self.ws_timer = GLib.timeout_add(500, self.check_workspace)
 
     def animate_open(self):
         if not self.alive:
