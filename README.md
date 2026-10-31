@@ -28,8 +28,12 @@ English popup; the Russian popup is shown in the Russian section below.
   confirmed no-op falls back to the system sink via `wpctl` (or hides); the
   mark is cleared on track change. Paused/stopped playback stays native.
 - English and Russian UI, plus a JSON-based way to add more languages.
-- Chromium exposes a single MPRIS session per browser: after a second media
-  tab starts, the previous session is returned only when its tab plays again.
+- Explicit multi-player selection: Playing beats paused/stopped, the current
+  player stays sticky, and `WAYBAR_PLAYER_PRIORITY` breaks ties. playerctl
+  without `-p` can route a command to the first capable player; this project
+  never relies on that for selected-player actions.
+- `waybar-player-ctl` sends next/previous/volume/shuffle/loop to the selected
+  player instead of relying on playerctl's implicit default.
 
 ## Requirements (Arch)
 
@@ -70,7 +74,9 @@ Installed files:
 ```text
 $PREFIX/bin/waybar-player-status
 $PREFIX/bin/waybar-player-menu
+$PREFIX/bin/waybar-player-ctl
 $PREFIX/share/waybar-player/player-menu.py
+$PREFIX/share/waybar-player/players.py
 $PREFIX/share/waybar-player/i18n.py
 $PREFIX/share/waybar-player/locales/en.json
 $PREFIX/share/waybar-player/locales/ru.json
@@ -118,10 +124,10 @@ built-in `mpris` module if it is enabled, otherwise the track is shown twice.
   "exec-on-event": false,
   "restart-interval": 2,
   "on-click": "waybar-player-menu",
-  "on-click-middle": "playerctl previous",
-  "on-click-right": "playerctl play-pause",
-  "on-scroll-up": "playerctl volume 0.05+",
-  "on-scroll-down": "playerctl volume 0.05-"
+  "on-click-middle": "waybar-player-ctl previous",
+  "on-click-right": "waybar-player-ctl play-pause",
+  "on-scroll-up": "waybar-player-ctl volume-up",
+  "on-scroll-down": "waybar-player-ctl volume-down"
 }
 ```
 
@@ -167,6 +173,7 @@ See [`examples/style.css`](examples/style.css).
 | `WAYBAR_PLAYER_ACCENT` | `cover` | `cover` samples the cover colour; `fixed` keeps `#ff8c00`. |
 | `WAYBAR_PLAYER_VOLUME_MODE` | `auto` | `auto`, `player`, `sink` or `hide`; controls volume handling explicitly. |
 | `WAYBAR_PLAYER_VOLUME_FALLBACK` | `sink` | Legacy alias for `auto`: `sink` uses `wpctl`; `hide` hides the slider. |
+| `WAYBAR_PLAYER_PRIORITY` | empty | Comma-separated name substrings; first match wins among non-sticky candidates. |
 
 Language selection order: `WAYBAR_PLAYER_LANG`, `LC_ALL`, `LC_MESSAGES`,
 `LANG`. The first two letters are used (`ru_RU.UTF-8` → `ru`); unknown
@@ -197,6 +204,8 @@ To add a language:
 
 - Left click on the module: open/close the popup.
 - Middle click: previous track; right click: pause/play; wheel: volume.
+- Those actions call `waybar-player-ctl`, which targets the explicitly
+  selected player (never playerctl's implicit first-capable default).
 - In the popup: prev/play/next, shuffle and loop buttons when supported, volume
   icon opens the volume page, the bottom slider seeks, `✕`/`Esc` closes.
 - Loop cycles through `None → Track → Playlist`; shuffle toggles on/off. Players
@@ -224,7 +233,7 @@ To add a language:
 ## Tests
 
 ```bash
-python3 -m py_compile bin/waybar-player-status share/player-menu.py share/i18n.py tests/*.py
+python3 -m py_compile bin/waybar-player-status bin/waybar-player-ctl share/player-menu.py share/i18n.py share/players.py tests/*.py
 python3 -m venv --system-site-packages .venv
 .venv/bin/pip install pytest
 .venv/bin/python -m pytest -q
@@ -240,9 +249,11 @@ not open GTK windows.
 bin/
   waybar-player-status   # JSON status stream for Waybar
   waybar-player-menu     # wrapper: single instance + player-menu.py lookup
+  waybar-player-ctl      # selected-player controls for clicks/wheel
 share/
   player-menu.py         # GTK3 + gtk-layer-shell popup
   i18n.py                # JSON catalog loader and t()
+  players.py             # shared player selection and sticky state
 locales/
   en.json
   ru.json
@@ -294,10 +305,10 @@ PREFIX="$HOME/.local" ./install.sh
   "tooltip": true,
   "restart-interval": 2,
   "on-click": "waybar-player-menu",
-  "on-click-middle": "playerctl previous",
-  "on-click-right": "playerctl play-pause",
-  "on-scroll-up": "playerctl volume 0.05+",
-  "on-scroll-down": "playerctl volume 0.05-"
+  "on-click-middle": "waybar-player-ctl previous",
+  "on-click-right": "waybar-player-ctl play-pause",
+  "on-scroll-up": "waybar-player-ctl volume-up",
+  "on-scroll-down": "waybar-player-ctl volume-down"
 }
 ```
 
@@ -308,7 +319,7 @@ PREFIX="$HOME/.local" ./install.sh
 `WAYBAR_PLAYER_TITLE_WIDTH` (30), `WAYBAR_PLAYER_ART_DIRS` (пусто),
 `WAYBAR_PLAYER_LANG` (не задан), `WAYBAR_PLAYER_ACCENT` (`cover`),
 `WAYBAR_PLAYER_VOLUME_MODE` (`auto`), `WAYBAR_PLAYER_VOLUME_FALLBACK` (`sink`,
-старый синоним для `auto`).
+старый синоним для `auto`), `WAYBAR_PLAYER_PRIORITY` (пусто).
 Шафл/повтор показываются только при поддержке MPRIS; повтор идёт по кругу
 `None → Track → Playlist`. Цвет заголовка, ползунков и верхней полосы берётся
 из обложки (`fixed` — оранжевый `#ff8c00`); смена трека — fade ~150 мс.
@@ -323,9 +334,11 @@ PREFIX="$HOME/.local" ./install.sh
 `XDG_CACHE_HOME`/`~/.cache` и `WAYBAR_PLAYER_ART_DIRS`; проверяются realpath,
 размер ≤ 8 МБ и сигнатура PNG/JPEG/WebP/GIF.
 
-Chromium публикует одну MPRIS-сессию на браузер: после запуска второго
-медиа в другой вкладке прежняя сессия возвращается только после play в её
-вкладке. Добавить язык: скопировать `locales/en.json` в `locales/xx.json`, перевести
+Плеер выбирается явно: Playing важнее паузы, текущий остаётся липким,
+`WAYBAR_PLAYER_PRIORITY` задаёт приоритет. Клики/колесо вызывают
+`waybar-player-ctl`; все действия идут с `-p <выбранный>`. Без `-p`
+playerctl может отправить команду первому подходящему плееру.
+Добавить язык: скопировать `locales/en.json` в `locales/xx.json`, перевести
 значения, сохранить ключи и `{плейсхолдеры}`, затем снова запустить
 `./install.sh` и задать `WAYBAR_PLAYER_LANG=xx`.
 

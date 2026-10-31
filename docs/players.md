@@ -1,88 +1,105 @@
-# MPRIS diagnostics
+# MPRIS: несколько плееров
 
-Date: 2026-10-31. Yandex Music in Chromium.
+Дата проверки: 2026-10-31. Контекст: Яндекс Музыка — отдельное Electron-приложение
+с собственным MPRIS-именем (`chromium.instance...`), YouTube — Firefox
+(`firefox`). Это не один MPRIS на браузер.
 
-## `playerctl -l`
-
-```text
-chromium.instance125864
-```
-
-## `playerctl -a metadata --format '{{playerName}} {{status}}'`
-
-```text
-chromium Paused
-```
-
-## Chromium (`chromium.instance125864`)
-
-```text
-$ playerctl -p chromium.instance125864 volume
-1.000000
-$ playerctl -p chromium.instance125864 shuffle
-No player could handle this command
-$ playerctl -p chromium.instance125864 loop
-No player could handle this command
-$ playerctl -p chromium.instance125864 volume 0.3
-$ playerctl -p chromium.instance125864 volume   # after ~350 ms
-1.000000
-```
-
-Conclusions:
-
-- Chromium advertises a volume property, but setting it to `0.3` did not
-  change the reported value (`1.000000`); the volume control is ineffective.
-- Shuffle and loop are not supported; the popup hides those buttons.
-- The volume fallback (`WAYBAR_PLAYER_VOLUME_FALLBACK`, default `sink`) is
-  therefore required for this player.
-
-## Firefox
+## Что было видно в момент проверки
 
 ```text
 $ playerctl -l
 chromium.instance125864
-$ playerctl -p firefox volume
-No players found
+
+$ playerctl -a metadata --format '{{playerName}} {{status}} | {{title}}'
+chromium Playing | In the Field of Blood
+```
+
+Проверка каждого имени:
+
+```text
+$ playerctl -p chromium.instance125864 status
+Playing
+$ playerctl -p chromium.instance125864 loop
+No player could handle this command
+$ playerctl -p chromium.instance125864 shuffle
+No player could handle this command
+$ playerctl -p chromium.instance125864 volume
+1.000000
+```
+
+Без `-p`:
+
+```text
+$ playerctl metadata --format '{{playerName}} {{status}} | {{title}}'
+chromium Playing | In the Field of Blood
+
+$ playerctl loop
+No player could handle this command
+```
+
+В этот момент Firefox-плеера не было, поэтому проверить маршрутизацию между
+двумя живыми плеерами не удалось. При одном плеере playerctl без `-p`
+обслуживает его.
+
+## Поведение playerctl без `-p`
+
+`playerctl` без `-p` не знает о «текущем» или «выбранном» плеере. Для каждой
+команды он выбирает первый MPRIS-плеер, который **умеет эту команду**; это не
+обязательно играющий плеер и не обязательно тот, чей трек показан. Поэтому
+`metadata`, `loop`, `shuffle`, `volume` и управляющие команды могут уходить
+разным плеерам. Это и давало симптомы:
+
+- пауза в YouTube/Firefox могла перехватывать управление у играющей музыки;
+- `loop` без `-p` уходил в Firefox, хотя карточка показывала Яндекс Музыку;
+- возврат к музыке происходил только после play в её сессии.
+
+## Политика waybar-player
+
+Выбор общий для `waybar-player-status`, попапа и `waybar-player-ctl`:
+
+1. Если текущий выбранный плеер играет — остаёмся на нём, даже если играет
+   второй.
+2. Иначе Playing важнее Paused/Stopped.
+3. Среди равных кандидатов: `WAYBAR_PLAYER_PRIORITY` (подстроки имён через
+   запятую), затем липкий текущий плеер, затем самый недавно активный.
+4. Если не играет никто — остаётся липкий текущий плеер.
+5. Состояние хранится в `$XDG_RUNTIME_DIR/waybar-player/selection.json`
+   под `flock`; запись атомарная.
+
+Все запросы и команды к выбранному плееру выполняются с `-p <выбранный>`.
+Исключение — служебный `playerctl -a --follow` в статусном процессе, который
+нужен, чтобы видеть события всех плееров.
+
+## Firefox и обложка
+
+На момент проверки Firefox MPRIS-сеанса не публиковал:
+
+```text
 $ playerctl -p firefox metadata mpris:artUrl
 No players found
 ```
 
-Firefox was not running an MPRIS media session during this check, so its
-`mpris:artUrl` could not be inspected. The Firefox artwork issue is not
-reproduced here; it is not treated as a confirmed whitelist regression. When
-Firefox is playing, `playerctl -p firefox metadata mpris:artUrl` should be
-checked for scheme and path against the whitelist in `fetch_art()`.
-
-
-## Post-fix note (0.2.2)
-
-The Chromium check above was made while the player was **paused**. Under the
-new rule the result is ambiguous: volume is classified only while
-`status == playing`, and the mark is keyed by `(player, track id)`. The paused
-observation therefore must not switch the slider to the system sink. A
-playing-track check is still needed; after a track change the mark is cleared
-and Chromium/YouTube can keep native volume independently.
-
-
-## Ограничения Chromium
-
-Chromium публикует **одну MPRIS-сессию на браузер**. Если в одной вкладке
-играет Яндекс Музыка, а затем запускается YouTube, прежняя сессия не
-возвращается, пока в её вкладке снова не нажать play. `playerctl` видит только
-текущую сессию, поэтому `loop`/`shuffle` могут относиться к YouTube, даже если
-визуально открыта Яндекс Музыка. Это не кеш в `waybar-player`: приложение
-перечитывает поддержку при каждом refresh и скрывает кнопки при ошибке/пустом
-ответе, но не может увидеть неактивную вкладку браузера.
-
-Проверка:
+Поэтому причину заглушки обложки в Firefox сейчас подтвердить нельзя. Когда
+Firefox начнёт воспроизведение, проверьте:
 
 ```bash
 playerctl -l
-playerctl -a metadata --format '{{playerName}} | {{status}} | {{title}} | {{mpris:trackid}}'
-playerctl loop
-playerctl shuffle
+playerctl -p firefox metadata mpris:artUrl
 ```
 
-Если в `playerctl -l` одна строка `chromium.instance...`, значит видна только
-одна сессия. Чтобы вернуть Яндекс Музыку, нажмите play в её вкладке; после
-этого проверьте `playerctl loop` снова.
+Схема/путь должны попадать в разрешённые `file://`-каталоги; иначе это
+ограничение безопасности, а не регрессия выбора плеера.
+
+## Проверка выбора
+
+```bash
+playerctl -l
+playerctl -a metadata --format '{{playerName}} {{status}} | {{title}}'
+playerctl -p <name> status
+playerctl -p <name> loop
+playerctl -p <name> shuffle
+playerctl -p <name> volume
+```
+
+Сравните, какой игрок отвечает без `-p`, и какой выбран в
+`$XDG_RUNTIME_DIR/waybar-player/selection.json`.
