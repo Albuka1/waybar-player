@@ -17,6 +17,11 @@ English popup; the Russian popup is shown in the Russian section below.
 - Closes on outside click, `✕`, `Esc`, a second click on the module, or a niri
   workspace change.
 - Asynchronous cover loading with a placeholder; covers are cached for 14 days.
+- Shuffle and loop buttons when the player exposes those MPRIS properties;
+  the buttons are hidden for players that do not support them.
+- Accent colour sampled from the cover (`WAYBAR_PLAYER_ACCENT=cover|fixed`),
+  with the orange `#ff8c00` fallback.
+- 150 ms fade for cover and text on track changes.
 - English and Russian UI, plus a JSON-based way to add more languages.
 
 ## Requirements (Arch)
@@ -151,6 +156,7 @@ See [`examples/style.css`](examples/style.css).
 | `WAYBAR_PLAYER_TITLE_WIDTH` | `30` | Bar title width in characters. |
 | `WAYBAR_PLAYER_ART_DIRS` | empty | Extra `file://` cover directories, colon-separated. |
 | `WAYBAR_PLAYER_LANG` | unset | Force `en`, `ru`, or another installed locale. |
+| `WAYBAR_PLAYER_ACCENT` | `cover` | `cover` samples the cover colour; `fixed` keeps `#ff8c00`. |
 
 Language selection order: `WAYBAR_PLAYER_LANG`, `LC_ALL`, `LC_MESSAGES`,
 `LANG`. The first two letters are used (`ru_RU.UTF-8` → `ru`); unknown
@@ -181,8 +187,10 @@ To add a language:
 
 - Left click on the module: open/close the popup.
 - Middle click: previous track; right click: pause/play; wheel: volume.
-- In the popup: prev/play/next, volume icon opens the volume page, the bottom
-  slider seeks, `✕`/`Esc` closes.
+- In the popup: prev/play/next, shuffle and loop buttons when supported, volume
+  icon opens the volume page, the bottom slider seeks, `✕`/`Esc` closes.
+- Loop cycles through `None → Track → Playlist`; shuffle toggles on/off. Players
+  without these properties do not show the buttons.
 - The popup closes on outside click, a second module click, or a niri
   workspace switch.
 
@@ -247,7 +255,8 @@ LICENSE
 
 - В панели: вращающийся диск, бегущая строка, пауза/idle, тултип с треком,
   исполнителем, альбомом, плеером и громкостью.
-- В попапе: обложка, prev/play/next, громкость, перемотка; закрытие по клику
+- В попапе: обложка, prev/play/next, shuffle/loop (если плеер поддерживает),
+  громкость, перемотка; закрытие по клику
   вне, `✕`, `Esc`, повторному клику и смене воркспейса niri.
 - Интерфейс на английском и русском; язык задаётся `WAYBAR_PLAYER_LANG`,
   иначе берётся из `LC_ALL`/`LC_MESSAGES`/`LANG`; неизвестный язык → английский.
@@ -283,7 +292,10 @@ PREFIX="$HOME/.local" ./install.sh
 
 Переменные: `WAYBAR_PLAYER_RIGHT_MARGIN` (215), `WAYBAR_PLAYER_WIDTH` (320),
 `WAYBAR_PLAYER_TITLE_WIDTH` (30), `WAYBAR_PLAYER_ART_DIRS` (пусто),
-`WAYBAR_PLAYER_LANG` (не задан).
+`WAYBAR_PLAYER_LANG` (не задан), `WAYBAR_PLAYER_ACCENT` (`cover`).
+Шафл/повтор показываются только при поддержке MPRIS; повтор идёт по кругу
+`None → Track → Playlist`. Цвет заголовка, ползунков и верхней полосы берётся
+из обложки (`fixed` — оранжевый `#ff8c00`); смена трека — fade ~150 мс.
 
 Обложки: `https` и `file://` только внутри `/tmp`, `XDG_RUNTIME_DIR`,
 `XDG_CACHE_HOME`/`~/.cache` и `WAYBAR_PLAYER_ART_DIRS`; проверяются realpath,
