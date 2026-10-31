@@ -52,3 +52,13 @@ Firefox was not running an MPRIS media session during this check, so its
 reproduced here; it is not treated as a confirmed whitelist regression. When
 Firefox is playing, `playerctl -p firefox metadata mpris:artUrl` should be
 checked for scheme and path against the whitelist in `fetch_art()`.
+
+
+## Post-fix note (0.2.2)
+
+The Chromium check above was made while the player was **paused**. Under the
+new rule the result is ambiguous: volume is classified only while
+`status == playing`, and the mark is keyed by `(player, track id)`. The paused
+observation therefore must not switch the slider to the system sink. A
+playing-track check is still needed; after a track change the mark is cleared
+and Chromium/YouTube can keep native volume independently.
