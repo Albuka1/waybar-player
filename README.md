@@ -57,24 +57,60 @@ makepkg -si
 /usr/share/doc/waybar-player/
 ```
 
-### Вручную, для текущего пользователя
+### Пользовательская установка, без sudo
 
 ```bash
-install -Dm755 bin/waybar-player-status ~/.local/bin/waybar-player-status
-install -Dm755 bin/waybar-player-menu   ~/.local/bin/waybar-player-menu
-install -Dm644 share/player-menu.py     ~/.local/bin/player-menu.py
+./install.sh
+# другой PREFIX:
+PREFIX="$HOME/.local" ./install.sh
 ```
 
-`waybar-player-menu` ищет `player-menu.py` рядом с собой, затем в
-`/usr/share/waybar-player/`. Для системной установки:
+По умолчанию `PREFIX=$HOME/.local`; устанавливаются:
+
+```text
+$PREFIX/bin/waybar-player-status
+$PREFIX/bin/waybar-player-menu
+$PREFIX/share/waybar-player/player-menu.py
+$PREFIX/share/doc/waybar-player/config.jsonc
+$PREFIX/share/doc/waybar-player/style.css
+```
+
+`waybar-player-menu` ищет `player-menu.py` в таком порядке:
+
+1. `../share/waybar-player/player-menu.py` (установка в `PREFIX`);
+2. рядом с собой (старая ручная установка);
+3. `../share/player-menu.py` (запуск из git-чекаута);
+4. `/usr/share/waybar-player/player-menu.py` (пакет/системная установка).
+
+Убедитесь, что `$PREFIX/bin` есть в `PATH` у Waybar.
+
+Удаление установленных файлов (конфиги и кэш не трогаются):
 
 ```bash
-sudo install -Dm755 bin/waybar-player-status /usr/local/bin/waybar-player-status
-sudo install -Dm755 bin/waybar-player-menu   /usr/local/bin/waybar-player-menu
-sudo install -Dm644 share/player-menu.py     /usr/share/waybar-player/player-menu.py
+./uninstall.sh
+# или: PREFIX=/другой/prefix ./uninstall.sh
 ```
 
-Убедитесь, что каталог с бинарниками есть в `PATH` у Waybar.
+### Бэкап и откат
+
+Перед заменой старого плеера сделайте бэкап конфигурации и скриптов:
+
+```bash
+backup="$HOME/.config/waybar/backup-waybar-player-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup/scripts"
+cp ~/.config/waybar/config.jsonc ~/.config/waybar/style.css "$backup/"
+cp ~/.config/waybar/scripts/player-status.sh ~/.config/waybar/scripts/player-menu.sh "$backup/scripts/"
+```
+
+Если в бэкапе есть `rollback.sh`, откат выполняется одной командой:
+
+```bash
+~/.config/waybar/backup-waybar-player-*/rollback.sh
+```
+
+`rollback.sh` возвращает `config.jsonc`, `style.css`, `scripts/player-status.sh`,
+`scripts/player-menu.sh`, останавливает новые процессы `waybar-player-*` и
+перезагружает Waybar сигналом `SIGUSR2`.
 
 ## Настройка Waybar
 

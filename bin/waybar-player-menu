@@ -6,9 +6,10 @@
 # (flock + pid), а весь GTK-интерфейс живёт в player-menu.py.
 #
 # player-menu.py ищется:
-#   1. рядом с этим скриптом;
-#   2. в ../share/player-menu.py (запуск из git-чекаута);
-#   3. в /usr/share/waybar-player/player-menu.py (после установки пакета).
+#   1. в ../share/waybar-player/player-menu.py (установка в PREFIX);
+#   2. рядом с этим скриптом (старая ручная установка);
+#   3. в ../share/player-menu.py (запуск из git-чекаута);
+#   4. в /usr/share/waybar-player/player-menu.py (пакет / системная установка).
 
 set -uo pipefail
 
@@ -39,6 +40,7 @@ notify_user() {
 find_menu_py() {
     local candidate
     for candidate in \
+        "$SCRIPT_DIR/../share/waybar-player/player-menu.py" \
         "$SCRIPT_DIR/player-menu.py" \
         "$SCRIPT_DIR/../share/player-menu.py" \
         "/usr/share/waybar-player/player-menu.py"; do
