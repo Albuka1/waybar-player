@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 import hashlib
+import ipaddress
 import json
 import os
-import shutil
+import socket
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -52,6 +55,8 @@ RIGHT_MARGIN = env_int("WAYBAR_PLAYER_RIGHT_MARGIN", 215, 0)
 COVER_SIZE = 72
 PLAYERCTL_TIMEOUT = 1.5
 OPEN_ANIM_MS = 100
+ART_MAX_BYTES = 8 * 1024 * 1024
+ART_TIMEOUT = 4
 
 CSS = b"""
 * {
@@ -264,41 +269,87 @@ def get_state():
     }
 
 
+def _is_public_address(host):
+    """True, если ВСЕ адреса хоста публичные (защита от SSRF)."""
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            address = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if not address.is_global:
+            return False
+        if (address.is_private or address.is_loopback or address.is_link_local
+                or address.is_multicast or address.is_reserved
+                or address.is_unspecified):
+            return False
+    return True
+
+
+def validate_art_url(url):
+    """Разрешает только https-URL с публичным хостом."""
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme != "https":
+        return False
+    if not parts.hostname:
+        return False
+    if parts.username or parts.password:
+        return False
+    return _is_public_address(parts.hostname)
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        absolute = urllib.parse.urljoin(req.full_url, newurl)
+        if not validate_art_url(absolute):
+            raise urllib.error.HTTPError(
+                absolute, code, "blocked redirect to non-public URL", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, absolute)
+
+
+_ART_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _SafeRedirectHandler(),
+)
+
+
 def fetch_art(url):
-    """Копирует/скачивает обложку в кэш и возвращает путь (или None)."""
-    if not url:
+    """Скачивает https-обложку в кэш; file:// и локальные адреса запрещены."""
+    if not validate_art_url(url):
         return None
     try:
         key = hashlib.sha1(url.encode("utf-8")).hexdigest()
         dest = os.path.join(CACHE_DIR, "popup-" + key + ".img")
-
-        if url.startswith("file://"):
-            src = urllib.parse.unquote(url[7:])
-            if not os.path.isfile(src):
-                return None
-            if os.path.isfile(dest) and os.path.getmtime(dest) >= os.path.getmtime(src):
-                return dest
-            tmp = dest + ".tmp"
-            shutil.copyfile(src, tmp)
-            os.replace(tmp, dest)
+        if os.path.isfile(dest) and os.path.getsize(dest) > 0:
             return dest
 
-        if url.startswith(("http://", "https://")):
-            if os.path.isfile(dest) and os.path.getsize(dest) > 0:
-                return dest
-            req = urllib.request.Request(url, headers={"User-Agent": "waybar-player/1.0"})
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                data = resp.read(8 * 1024 * 1024)
-            if not data:
+        req = urllib.request.Request(url, headers={"User-Agent": "waybar-player/1.0"})
+        with _ART_OPENER.open(req, timeout=ART_TIMEOUT) as resp:
+            final_url = resp.geturl()
+            if not validate_art_url(final_url):
                 return None
-            tmp = dest + ".tmp"
-            with open(tmp, "wb") as fh:
-                fh.write(data)
-            os.replace(tmp, dest)
-            return dest
+            data = resp.read(ART_MAX_BYTES + 1)
+        if not data or len(data) > ART_MAX_BYTES:
+            return None
+
+        tmp = dest + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, dest)
+        return dest
     except Exception:
         return None
-    return None
 
 
 def load_cover(path):
@@ -324,6 +375,7 @@ class PlayerPopup:
     def __init__(self):
         self.state = None
         self.art_url = None
+        self.art_token = 0
         self.length = None
         self.alive = True
 
@@ -735,9 +787,20 @@ class PlayerPopup:
         self.status_label.set_text("Нет активного MPRIS-плеера")
         self.info_stack.set_visible_child_name("status")
         self.length = None
+        self.art_token += 1
         if self.art_url is not None:
             self.art_url = None
             self.set_placeholder()
+
+    def _fetch_cover(self, token, url):
+        path = fetch_art(url)
+        GLib.idle_add(self._apply_cover, token, url, path)
+
+    def _apply_cover(self, token, url, path):
+        if not self.alive or token != self.art_token or url != self.art_url:
+            return False
+        self.set_cover(path)
+        return False
 
     def update_from_state(self, st):
         self.state = st
@@ -761,7 +824,15 @@ class PlayerPopup:
 
         if self.art_url != st["art_url"]:
             self.art_url = st["art_url"]
-            self.set_cover(fetch_art(st["art_url"]))
+            self.art_token += 1
+            self.set_placeholder()
+            if self.art_url:
+                token = self.art_token
+                threading.Thread(
+                    target=self._fetch_cover,
+                    args=(token, self.art_url),
+                    daemon=True,
+                ).start()
 
         if st["volume"] is None:
             self.vol_btn.set_sensitive(False)
