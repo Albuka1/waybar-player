@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import colorsys
 import glob
 import hashlib
 import ipaddress
@@ -58,6 +59,10 @@ WIDTH = env_int("WAYBAR_PLAYER_WIDTH", 320, 200)
 CARD_TOP_MARGIN = 8      # зазор карточки от рабочей области под Waybar
 RIGHT_MARGIN = env_int("WAYBAR_PLAYER_RIGHT_MARGIN", 215, 0)
 COVER_SIZE = 72
+DEFAULT_ACCENT = "#ff8c00"
+ACCENT_MODE = os.environ.get("WAYBAR_PLAYER_ACCENT", "cover").strip().lower()
+if ACCENT_MODE not in ("cover", "fixed"):
+    ACCENT_MODE = "cover"
 PLAYERCTL_TIMEOUT = 1.5
 OPEN_ANIM_MS = 100
 ART_MAX_BYTES = 8 * 1024 * 1024
@@ -498,6 +503,26 @@ def load_cover(path):
     return pb
 
 
+def readable_accent(r, g, b):
+    """Поднимает светлоту и насыщенность цвета до читаемого порога."""
+    hue, lightness, saturation = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+    lightness = max(lightness, 0.60)
+    saturation = max(saturation, 0.55)
+    red, green, blue = colorsys.hls_to_rgb(hue, lightness, saturation)
+    return "#{:02x}{:02x}{:02x}".format(
+        int(round(red * 255)), int(round(green * 255)), int(round(blue * 255))
+    )
+
+
+def pixbuf_accent(pixbuf):
+    try:
+        small = pixbuf.scale_simple(1, 1, GdkPixbuf.InterpType.BILINEAR)
+        pixels = small.get_pixels()
+        return readable_accent(pixels[0], pixels[1], pixels[2])
+    except (GLib.Error, TypeError, IndexError):
+        return DEFAULT_ACCENT
+
+
 class PlayerPopup:
     def __init__(self):
         self.state = None
@@ -532,6 +557,16 @@ class PlayerPopup:
         self.win.set_app_paintable(True)
 
         screen = self.win.get_screen()
+        self.screen = screen
+        self.accent_provider = Gtk.CssProvider()
+        if screen is not None:
+            Gtk.StyleContext.add_provider_for_screen(
+                screen,
+                self.accent_provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+            )
+        self.apply_accent(DEFAULT_ACCENT)
+
         visual = screen.get_rgba_visual() if screen is not None else None
         if visual is not None:
             self.win.set_visual(visual)
@@ -859,6 +894,8 @@ class PlayerPopup:
         self.seek_timeout = 0
         self.anim_id = 0
         self.ws_timer = 0
+        if self.accent_provider is not None and self.screen is not None:
+            Gtk.StyleContext.remove_provider_for_screen(self.screen, self.accent_provider)
         Gtk.main_quit()
 
     def on_key(self, _widget, event):
@@ -881,6 +918,15 @@ class PlayerPopup:
 
     # --- отрисовка ----------------------------------------------------------
 
+    def apply_accent(self, color):
+        css = (
+            "#player-card {{ border-top-color: {0}; }}\n"
+            "#popup-title {{ color: {0}; }}\n"
+            "scale trough highlight {{ background-color: {0}; }}\n"
+            "scale trough slider {{ background-color: {0}; }}\n"
+        ).format(color)
+        self.accent_provider.load_from_data(css.encode("utf-8"))
+
     def set_placeholder(self):
         theme = Gtk.IconTheme.get_default()
         for name in ("audio-x-generic", "media-optical", "applications-multimedia"):
@@ -891,6 +937,7 @@ class PlayerPopup:
             self.cover.set_from_pixbuf(pb)
             return
         self.cover.set_from_icon_name("audio-x-generic", Gtk.IconSize.DIALOG)
+        self.apply_accent(DEFAULT_ACCENT)
 
     def set_cover(self, path):
         pb = load_cover(path)
@@ -898,6 +945,10 @@ class PlayerPopup:
             self.set_placeholder()
         else:
             self.cover.set_from_pixbuf(pb)
+            if ACCENT_MODE == "cover":
+                self.apply_accent(pixbuf_accent(pb))
+            else:
+                self.apply_accent(DEFAULT_ACCENT)
 
     def _set_mode_active(self, button, active):
         ctx = button.get_style_context()

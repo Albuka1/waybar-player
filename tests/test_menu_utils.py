@@ -1,4 +1,5 @@
 import base64
+import colorsys
 import os
 import shutil
 import tempfile
@@ -156,3 +157,17 @@ def test_loop_cycle_and_commands():
     assert menu.loop_command("track") == "Track"
     assert menu.loop_command("playlist") == "Playlist"
     assert menu.loop_command(None) is None
+
+
+def test_readable_accent_brightens_dark_colour():
+    color = menu.readable_accent(8, 8, 8)
+    assert color.startswith("#") and len(color) == 7
+    r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+    _, lightness, saturation = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
+    assert lightness >= 0.59
+    assert saturation >= 0.54
+
+
+def test_readable_accent_keeps_orange_readable():
+    color = menu.readable_accent(255, 140, 0)
+    assert color != "#000000"
