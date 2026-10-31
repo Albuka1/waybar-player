@@ -8,10 +8,14 @@ import socket
 import subprocess
 import sys
 import threading
+from pathlib import Path
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from i18n import t  # noqa: E402
 
 import gi
 
@@ -193,6 +197,8 @@ def pctl(*args, timeout=PLAYERCTL_TIMEOUT):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
@@ -478,7 +484,7 @@ class PlayerPopup:
         self.anim_from = 0
 
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
-        self.win.set_title("Медиаплеер")
+        self.win.set_title(t("menu.title"))
         self.win.set_decorated(False)
         self.win.set_resizable(False)
         self.win.set_skip_taskbar_hint(True)
@@ -565,7 +571,7 @@ class PlayerPopup:
         self.close_btn.set_relief(Gtk.ReliefStyle.NONE)
         self.close_btn.set_size_request(22, 22)
         self.close_btn.set_valign(Gtk.Align.START)
-        self.close_btn.set_tooltip_text("Закрыть (Esc)")
+        self.close_btn.set_tooltip_text(t("menu.close"))
         self.close_btn.connect("clicked", self.close)
         header.pack_end(self.close_btn, False, False, 0)
 
@@ -575,9 +581,9 @@ class PlayerPopup:
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         controls.set_halign(Gtk.Align.CENTER)
 
-        self.prev_btn = self._control("󰒮", "Предыдущий трек", self.on_prev)
-        self.play_btn = self._control("󰐊", "Плей/Пауза", self.on_play_pause)
-        self.next_btn = self._control("󰒭", "Следующий трек", self.on_next)
+        self.prev_btn = self._control("󰒮", t("menu.prev"), self.on_prev)
+        self.play_btn = self._control("󰐊", t("menu.play_pause"), self.on_play_pause)
+        self.next_btn = self._control("󰒭", t("menu.next"), self.on_next)
         self.play_btn.set_name("play-btn")
         self.prev_btn.set_size_request(52, 46)
         self.play_btn.set_size_request(56, 56)
@@ -606,7 +612,7 @@ class PlayerPopup:
         vol_page = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         vol_page.set_valign(Gtk.Align.CENTER)
 
-        vol_title = Gtk.Label(label="Громкость")
+        vol_title = Gtk.Label(label=t("menu.volume"))
         vol_title.set_name("popup-small")
         vol_title.set_xalign(0.0)
         vol_page.pack_start(vol_title, False, False, 0)
@@ -746,6 +752,8 @@ class PlayerPopup:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=0.6,
             )
             if res.returncode != 0:
@@ -854,7 +862,7 @@ class PlayerPopup:
         self.state = None
         self.set_controls_sensitive(False)
         self.seek.set_sensitive(False)
-        self.title_label.set_text("Плеер недоступен")
+        self.title_label.set_text(t("player.unavailable"))
         self.artist_label.set_text("")
         self.album_label.set_text("")
         self.artist_label.hide()
@@ -866,7 +874,7 @@ class PlayerPopup:
         self.vol_btn.set_label("󰝟")
         self.vol_value.set_text("—")
         self.vol_scale.set_sensitive(False)
-        self.status_label.set_text("Нет активного MPRIS-плеера")
+        self.status_label.set_text(t("player.no_active"))
         self.info_stack.set_visible_child_name("status")
         self.length = None
         self.art_token += 1
@@ -888,7 +896,7 @@ class PlayerPopup:
         self.state = st
         self.set_controls_sensitive(True)
 
-        title = st["title"] or st["artist"] or st["player"] or "Без названия"
+        title = st["title"] or st["artist"] or st["player"] or t("status.no_title")
         self.title_label.set_text(title)
         self.artist_label.set_text(st["artist"])
         self.album_label.set_text(st["album"])
@@ -897,11 +905,11 @@ class PlayerPopup:
 
         playing = st["status"] == "playing"
         self.play_btn.set_label("󰏤" if playing else "󰐊")
-        self.play_btn.set_tooltip_text("Пауза" if playing else "Играть")
+        self.play_btn.set_tooltip_text(t("menu.pause") if playing else t("menu.play"))
 
-        status_ru = {"playing": "Играет", "paused": "Пауза"}.get(st["status"], "Остановлен")
+        status_ru = {"playing": t("status.playing"), "paused": t("status.paused")}.get(st["status"], t("status.stopped"))
         player = st["player"] or "MPRIS"
-        self.status_label.set_text(f"{player} • {status_ru}")
+        self.status_label.set_text(t("menu.status", player=player, status=status_ru))
         self.status_label.set_tooltip_text(f"{title}\n{st['artist']}")
 
         if self.art_url != st["art_url"]:

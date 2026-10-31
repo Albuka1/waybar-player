@@ -19,6 +19,19 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+for _candidate in (
+    _SCRIPT_DIR,
+    _SCRIPT_DIR.parent / "share" / "waybar-player",
+    _SCRIPT_DIR.parent / "share",
+    Path("/usr/share/waybar-player"),
+):
+    if (_candidate / "i18n.py").is_file():
+        sys.path.insert(0, str(_candidate))
+        break
+from i18n import t  # noqa: E402
 
 SEP = "\x1f"
 FMT = SEP.join([
@@ -56,10 +69,10 @@ def clean_field(value):
 
 def status_ru(status):
     if status == "playing":
-        return "Играет"
+        return t("status.playing")
     if status == "paused":
-        return "Пауза"
-    return "Остановлен"
+        return t("status.paused")
+    return t("status.stopped")
 
 
 def truncate_title(text, width):
@@ -120,7 +133,7 @@ def track_key(state):
 
 
 def song_title(state):
-    return state["title"] or state["artist"] or state["player"] or "Без названия"
+    return state["title"] or state["artist"] or state["player"] or t("status.no_title")
 
 
 def build_status(state, tick, offset, title_width=TITLE_WIDTH):
@@ -128,7 +141,7 @@ def build_status(state, tick, offset, title_width=TITLE_WIDTH):
     if state is None:
         return (
             ICON_IDLE,
-            "Нет активного MPRIS-плеера\n\nЛКМ — открыть меню",
+            t("status.no_player_hint"),
             "stopped",
             None,
         )
@@ -153,10 +166,10 @@ def build_status(state, tick, offset, title_width=TITLE_WIDTH):
         if title:
             text = "{}  {}".format(ICON_PAUSE, truncate_title(song, title_width))
         else:
-            text = "{}  Остановлено".format(ICON_PAUSE)
+            text = "{}  {}".format(ICON_PAUSE, t("status.stopped_text"))
 
     if status == "stopped" and not title:
-        tip = "Остановлено"
+        tip = t("status.stopped_text")
     else:
         tip = song
         if artist:
@@ -164,12 +177,12 @@ def build_status(state, tick, offset, title_width=TITLE_WIDTH):
         if album:
             tip += "\n" + album
     if player:
-        tip += "\n\nПлеер: " + player
+        tip += "\n\n" + t("status.player", player=player)
     if pct is not None:
-        tip += "\nГромкость: {}%".format(pct)
-    tip += "\nСостояние: " + status_ru(status)
-    tip += "\n\nЛКМ — меню • СКМ — предыдущий • ПКМ — пауза/плей"
-    tip += "\nКолесо — громкость"
+        tip += "\n" + t("status.volume", pct=pct)
+    tip += "\n" + t("status.state", status=status_ru(status))
+    tip += "\n\n" + t("status.hints")
+    tip += "\n" + t("status.scroll_hint")
 
     return text, tip, cls, pct
 
