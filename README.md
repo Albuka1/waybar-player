@@ -28,6 +28,8 @@ English popup; the Russian popup is shown in the Russian section below.
   confirmed no-op falls back to the system sink via `wpctl` (or hides); the
   mark is cleared on track change. Paused/stopped playback stays native.
 - English and Russian UI, plus a JSON-based way to add more languages.
+- Status is refreshed on every player event and by a 1 s fallback poll;
+  each JSON line is flushed immediately to Waybar.
 - Explicit multi-player selection: Playing beats paused/stopped, the current
   player stays sticky, and `WAYBAR_PLAYER_PRIORITY` breaks ties. playerctl
   without `-p` can route a command to the first capable player; this project
@@ -334,6 +336,8 @@ PREFIX="$HOME/.local" ./install.sh
 `XDG_CACHE_HOME`/`~/.cache` и `WAYBAR_PLAYER_ART_DIRS`; проверяются realpath,
 размер ≤ 8 МБ и сигнатура PNG/JPEG/WebP/GIF.
 
+Статус обновляется на каждое событие плеера и страховочным опросом раз в
+секунду; каждая JSON-строка сразу сбрасывается в pipe Waybar.
 Плеер выбирается явно: Playing важнее паузы, текущий остаётся липким,
 `WAYBAR_PLAYER_PRIORITY` задаёт приоритет. Клики/колесо вызывают
 `waybar-player-ctl`; все действия идут с `-p <выбранный>`. Без `-p`
