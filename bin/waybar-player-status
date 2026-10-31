@@ -24,7 +24,10 @@ readonly FRAMES=(◐ ◓ ◑ ◒)
 readonly ICON_PAUSE="󰏤"
 readonly ICON_IDLE="󰎆"
 
-readonly TITLE_WIDTH=30      # сколько символов трека показывать на панели
+TITLE_WIDTH=${WAYBAR_PLAYER_TITLE_WIDTH:-30}  # сколько символов трека показывать на панели
+[[ $TITLE_WIDTH =~ ^[0-9]+$ ]] || TITLE_WIDTH=30
+(( TITLE_WIDTH < 1 )) && TITLE_WIDTH=30
+readonly TITLE_WIDTH
 readonly PLAY_DELAY=0.2      # период анимации/бегущей строки при воспроизведении
 readonly IDLE_DELAY=1.0      # период опроса на паузе/остановке/без плеера
 readonly PCTL_TIMEOUT=1      # жёсткий таймаут на один вызов playerctl

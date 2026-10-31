@@ -38,9 +38,17 @@ CACHE_DIR = os.environ.get("PM_CACHE") or os.path.join(
     "waybar-player",
 )
 
-WIDTH = 320
+def env_int(name, default, minimum):
+    try:
+        value = int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+WIDTH = env_int("WAYBAR_PLAYER_WIDTH", 320, 200)
 CARD_TOP_MARGIN = 8      # зазор карточки от рабочей области под Waybar
-RIGHT_MARGIN = 215       # центрирование под зоной плеера в панели
+RIGHT_MARGIN = env_int("WAYBAR_PLAYER_RIGHT_MARGIN", 215, 0)
 COVER_SIZE = 72
 PLAYERCTL_TIMEOUT = 1.5
 OPEN_ANIM_MS = 100
