@@ -27,6 +27,7 @@ class MprisPlayer:
         self.status = "stopped"
         self.metadata = {}
         self.volume = None
+        self.rate = 1.0
         self.shuffle = None
         self.loop = None
         self.can_next = False
@@ -40,6 +41,19 @@ class MprisPlayer:
         self.ready = False
 
     def start(self, callback):
+        if self.manager.bus is not None:
+            Gio.DBusProxy.new(
+                self.manager.bus,
+                Gio.DBusProxyFlags.NONE,
+                None,
+                self.name,
+                OBJECT_PATH,
+                PLAYER_IFACE,
+                None,
+                self._player_ready,
+                callback,
+            )
+            return
         Gio.DBusProxy.new_for_bus(
             Gio.BusType.SESSION,
             Gio.DBusProxyFlags.NONE,
@@ -59,7 +73,21 @@ class MprisPlayer:
             callback(self, False)
             return
         self.player_proxy.connect("g-properties-changed", self._properties_changed)
+        self.player_proxy.connect("g-signal", self._g_signal)
         self._read_player_cache()
+        if self.manager.bus is not None:
+            Gio.DBusProxy.new(
+                self.manager.bus,
+                Gio.DBusProxyFlags.NONE,
+                None,
+                self.name,
+                OBJECT_PATH,
+                ROOT_IFACE,
+                None,
+                self._root_ready,
+                callback,
+            )
+            return
         Gio.DBusProxy.new_for_bus(
             Gio.BusType.SESSION,
             Gio.DBusProxyFlags.NONE,
@@ -88,6 +116,15 @@ class MprisPlayer:
         self._read_root_cache()
         self.manager.player_changed(self)
 
+    def _g_signal(self, _proxy, _sender, signal_name, params):
+        if signal_name != "Seeked":
+            return
+        try:
+            value = params.unpack()[0]
+            self.manager.player_seeked(self, float(value) / 1_000_000.0)
+        except (GLib.Error, TypeError, IndexError, ValueError):
+            pass
+
     def _apply_player_properties(self, values):
         if "PlaybackStatus" in values:
             self.status = str(values["PlaybackStatus"]).lower()
@@ -98,6 +135,11 @@ class MprisPlayer:
             }
         if "Volume" in values:
             self.volume = float(values["Volume"])
+        if "Rate" in values:
+            try:
+                self.rate = float(values["Rate"])
+            except (TypeError, ValueError):
+                self.rate = 1.0
         if "Shuffle" in values:
             self.shuffle = bool(values["Shuffle"])
         if "LoopStatus" in values:
@@ -123,7 +165,7 @@ class MprisPlayer:
             return
         cached = {}
         for prop in (
-            "PlaybackStatus", "Metadata", "Volume", "Shuffle", "LoopStatus",
+            "PlaybackStatus", "Metadata", "Volume", "Rate", "Shuffle", "LoopStatus",
             "CanGoNext", "CanGoPrevious", "CanPause", "CanControl",
         ):
             value = proxy.get_cached_property(prop)
@@ -352,8 +394,9 @@ class MprisPlayer:
 
 
 class MprisManager:
-    def __init__(self, on_change=None):
+    def __init__(self, on_change=None, on_seeked=None):
         self.on_change = on_change or (lambda: None)
+        self.on_seeked = on_seeked or (lambda _player, _position: None)
         self.players = {}
         self.bus = None
         self._started = False
@@ -361,8 +404,12 @@ class MprisManager:
         self._pending = 0
         self._names_done = False
 
-    def start(self, ready=None):
+    def start(self, ready=None, connection=None):
         self._ready = ready
+        if connection is not None:
+            self.bus = connection
+            self._setup_bus()
+            return
         Gio.bus_get(Gio.BusType.SESSION, None, self._bus_ready)
 
     def _bus_ready(self, _source, result):
@@ -371,6 +418,9 @@ class MprisManager:
         except GLib.Error:
             self.on_change()
             return
+        self._setup_bus()
+
+    def _setup_bus(self):
         self.bus.signal_subscribe(
             "org.freedesktop.DBus",
             "org.freedesktop.DBus",
@@ -434,6 +484,10 @@ class MprisManager:
         player.start(ready)
 
     def player_changed(self, _player):
+        self.on_change()
+
+    def player_seeked(self, player, position):
+        self.on_seeked(player, position)
         self.on_change()
 
     def refresh_all(self, callback=None):

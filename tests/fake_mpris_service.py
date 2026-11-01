@@ -20,6 +20,8 @@ XML = """
     <property name="PlaybackStatus" type="s" access="read"/>
     <property name="Metadata" type="a{sv}" access="read"/>
     <property name="Volume" type="d" access="readwrite"/>
+    <property name="Position" type="x" access="read"/>
+    <property name="Rate" type="d" access="read"/>
     <property name="Shuffle" type="b" access="readwrite"/>
     <property name="LoopStatus" type="s" access="readwrite"/>
     <property name="CanGoNext" type="b" access="read"/>
@@ -56,7 +58,10 @@ def metadata(status):
 def main():
     connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
     info = Gio.DBusNodeInfo.new_for_xml(XML).interfaces[0]
-    state = {"value": read_state(), "volume": 0.5, "shuffle": False, "loop": "None"}
+    state = {
+        "value": read_state(), "volume": 0.5, "shuffle": False,
+        "loop": "None", "position": 10_000_000, "rate": 1.0,
+    }
 
     def get_property(_conn, _sender, _path, _iface, prop):
         if prop == "PlaybackStatus":
@@ -65,6 +70,10 @@ def main():
             return GLib.Variant("a{sv}", metadata(state["value"]))
         if prop == "Volume":
             return GLib.Variant("d", state["volume"])
+        if prop == "Position":
+            return GLib.Variant("x", state["position"])
+        if prop == "Rate":
+            return GLib.Variant("d", state["rate"])
         if prop == "Shuffle":
             return GLib.Variant("b", state["shuffle"])
         if prop == "LoopStatus":
@@ -82,9 +91,21 @@ def main():
             state["loop"] = str(value.unpack())
         return True
 
-    def method(_conn, _sender, _path, _iface, name, _params, invocation):
+    def method(_conn, _sender, _path, _iface, name, params, invocation):
         if name == "PlayPause":
             state["value"] = "Paused" if state["value"] == "Playing" else "Playing"
+        elif name == "SetPosition":
+            state["position"] = int(params.unpack()[1])
+            connection.emit_signal(
+                None, PATH, PLAYER, "Seeked",
+                GLib.Variant("(x)", (state["position"],)),
+            )
+        elif name == "Seek":
+            state["position"] += int(params.unpack()[0])
+            connection.emit_signal(
+                None, PATH, PLAYER, "Seeked",
+                GLib.Variant("(x)", (state["position"],)),
+            )
         invocation.return_value(None)
 
     connection.register_object(PATH, info, method, get_property, set_property)
