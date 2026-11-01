@@ -1,42 +1,56 @@
 import subprocess
 
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import GLib  # noqa: E402
+
 from helpers import load_module
 
 ctl = load_module("waybar_player_ctl", "bin/waybar-player-ctl")
 
 
-def _result(args, code=0, stdout=""):
-    return subprocess.CompletedProcess(args, code, stdout, "")
+class FakePlayer:
+    volume = 0.50
+    shuffle = False
+    loop = "none"
+    can_control = True
+
+    def __init__(self):
+        self.calls = []
+
+    def play_pause(self):
+        self.calls.append(("play-pause",))
+
+    def previous(self):
+        self.calls.append(("previous",))
+
+    def next(self):
+        self.calls.append(("next",))
+
+    def set_property(self, key, value):
+        self.calls.append(("set", key, value.unpack()))
 
 
-def test_ctl_runs_selected_player(monkeypatch):
-    calls = []
-    monkeypatch.setattr(ctl.players, "update_selection", lambda: "A")
-
-    def fake_pctl(player, *args, **_kwargs):
-        calls.append((player, args))
-        return _result(args)
-
-    monkeypatch.setattr(ctl, "pctl", fake_pctl)
-    assert ctl.main(["waybar-player-ctl", "play-pause"]) == 0
-    assert calls == [("A", ("play-pause",))]
+def test_ctl_play_pause_uses_player():
+    player = FakePlayer()
+    assert ctl.dispatch("play-pause", player)
+    assert player.calls == [("play-pause",)]
 
 
-def test_ctl_loop_cycles_on_selected_player(monkeypatch):
-    calls = []
-    monkeypatch.setattr(ctl.players, "update_selection", lambda: "A")
+def test_ctl_volume_and_loop_use_properties():
+    player = FakePlayer()
+    assert ctl.dispatch("volume-up", player)
+    assert player.calls[-1][0:2] == ("set", "Volume")
+    assert player.calls[-1][2] == 0.55
 
-    def fake_pctl(player, *args, **_kwargs):
-        calls.append((player, args))
-        if args[0] == "loop":
-            return _result(args, 0, "None\n")
-        return _result(args)
-
-    monkeypatch.setattr(ctl, "pctl", fake_pctl)
-    assert ctl.run("loop", "A")
-    assert calls[-1] == ("A", ("loop", "Track"))
+    assert ctl.dispatch("loop", player)
+    assert player.calls[-1] == ("set", "LoopStatus", "Track")
 
 
-def test_ctl_without_player_returns_error(monkeypatch):
-    monkeypatch.setattr(ctl.players, "update_selection", lambda: None)
-    assert ctl.main(["waybar-player-ctl", "next"]) == 1
+def test_ctl_unavailable_properties_return_false():
+    player = FakePlayer()
+    player.shuffle = None
+    player.loop = None
+    assert not ctl.dispatch("shuffle", player)
+    assert not ctl.dispatch("loop", player)

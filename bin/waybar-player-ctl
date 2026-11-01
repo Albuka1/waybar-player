@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Control the explicitly selected MPRIS player."""
+"""Control the explicitly selected MPRIS player over Gio D-Bus."""
 
-import subprocess
 import sys
 from pathlib import Path
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import GLib  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent
 for _candidate in (
@@ -11,10 +15,11 @@ for _candidate in (
     _HERE.parent / "share",
     Path("/usr/share/waybar-player"),
 ):
-    if (_candidate / "players.py").is_file():
+    if (_candidate / "mpris.py").is_file():
         sys.path.insert(0, str(_candidate))
         break
 
+import mpris  # noqa: E402
 import players  # noqa: E402
 
 COMMANDS = {
@@ -28,21 +33,6 @@ COMMANDS = {
 }
 
 
-def pctl(player, *args, timeout=2):
-    try:
-        return subprocess.run(
-            ["playerctl", "-p", player, *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
 def loop_next(value):
     return {"none": "track", "track": "playlist", "playlist": "none"}.get(value)
 
@@ -51,40 +41,38 @@ def loop_command(value):
     return {"none": "None", "track": "Track", "playlist": "Playlist"}.get(value)
 
 
-def read_value(player, command):
-    result = pctl(player, command)
-    if result is None or result.returncode != 0:
-        return None
-    value = result.stdout.strip().lower()
-    return value or None
-
-
-def _ok(result):
-    return result is not None and result.returncode == 0
-
-
-def run(command, player):
+def dispatch(command, player):
+    """Apply one CLI command to a player object. Returns True if called."""
     if command == "play-pause":
-        return _ok(pctl(player, "play-pause"))
+        player.play_pause()
+        return True
     if command == "previous":
-        return _ok(pctl(player, "previous"))
+        player.previous()
+        return True
     if command == "next":
-        return _ok(pctl(player, "next"))
+        player.next()
+        return True
     if command == "volume-up":
-        return _ok(pctl(player, "volume", "0.05+"))
-    if command == "volume-down":
-        return _ok(pctl(player, "volume", "0.05-"))
-    if command == "shuffle":
-        current = read_value(player, "shuffle")
-        if current not in ("on", "off"):
+        if player.volume is None:
             return False
-        return _ok(pctl(player, "shuffle", "Toggle"))
+        player.set_property("Volume", GLib.Variant("d", min(1.0, player.volume + 0.05)))
+        return True
+    if command == "volume-down":
+        if player.volume is None:
+            return False
+        player.set_property("Volume", GLib.Variant("d", max(0.0, player.volume - 0.05)))
+        return True
+    if command == "shuffle":
+        if player.shuffle is None:
+            return False
+        player.set_property("Shuffle", GLib.Variant("b", not player.shuffle))
+        return True
     if command == "loop":
-        current = read_value(player, "loop")
-        target = loop_next(current)
+        target = loop_next(player.loop)
         if target is None:
             return False
-        return _ok(pctl(player, "loop", loop_command(target)))
+        player.set_property("LoopStatus", GLib.Variant("s", loop_command(target)))
+        return True
     return False
 
 
@@ -92,10 +80,42 @@ def main(argv):
     if len(argv) != 2 or argv[1] not in COMMANDS:
         print("usage: waybar-player-ctl {%s}" % "|".join(sorted(COMMANDS)), file=sys.stderr)
         return 2
-    selected = players.update_selection()
-    if not selected:
-        return 1
-    return 0 if run(argv[1], selected) else 1
+
+    loop = GLib.MainLoop()
+    result = {"code": 1}
+
+    def finish(code):
+        result["code"] = code
+        loop.quit()
+
+    def ready():
+        manager = app["manager"]
+        by_name = manager.players
+        names = list(by_name)
+        statuses = {name: by_name[name].status for name in names}
+        identities = {
+            name: {
+                "desktop_entry": by_name[name].desktop_entry,
+                "identity": by_name[name].identity,
+                "base": by_name[name].base_name,
+            }
+            for name in names
+        }
+        selected = players.update_selection(names, statuses, identities)
+        if not selected:
+            finish(1)
+            return
+        player = by_name[selected]
+        if dispatch(argv[1], player):
+            GLib.timeout_add(250, lambda: finish(0))
+        else:
+            finish(1)
+
+    app = {"manager": mpris.MprisManager(lambda: None)}
+    app["manager"].start(ready)
+    GLib.timeout_add(3000, lambda: finish(1))
+    loop.run()
+    return result["code"]
 
 
 if __name__ == "__main__":
