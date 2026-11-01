@@ -235,60 +235,94 @@ def test_volume_check_marks_only_for_playing_clear_result():
     assert not menu.volume_check_marks("playing", True, 0.3, 0.3)
 
 
-def test_mode_visibility_rechecks_each_session(monkeypatch):
-    current = {"track": "A"}
+class FakePlayer:
+    base_name = "chromium"
+    status = "playing"
+    volume = 0.5
+    shuffle = False
+    can_next = True
+    can_previous = True
+    can_pause = True
+    can_control = True
 
-    def fake_pctl(*args, **_kwargs):
-        command = args[0]
-        if command == "metadata":
-            track = current["track"]
-            fields = [
-                "Playing", "chromium", "Title " + track, "Artist", "Album",
-                "", "0.5", "0", "100", "track-" + track, "https://example/" + track,
-            ]
-            return subprocess.CompletedProcess(args, 0, menu.SEP.join(fields) + "\n", "")
-        if command == "shuffle":
-            if current["track"] == "A":
-                return subprocess.CompletedProcess(args, 0, "Off\n", "")
-            return subprocess.CompletedProcess(args, 1, "", "No player could handle this command")
-        if command == "loop":
-            if current["track"] == "A":
-                return subprocess.CompletedProcess(args, 0, "Track\n", "")
-            return subprocess.CompletedProcess(args, 1, "", "No player could handle this command")
-        return None
+    def __init__(self, track, loop=None, shuffle=False):
+        self.track = track
+        self.loop = loop
+        self.shuffle = shuffle
 
-    monkeypatch.setattr(menu, "pctl", fake_pctl)
-    state_a = menu.get_state("chromium")
+    def title(self):
+        return "Title " + self.track
+
+    def artist(self):
+        return "Artist"
+
+    def album(self):
+        return "Album"
+
+    def art_url(self):
+        return ""
+
+    def track_id(self):
+        return "track-" + self.track
+
+    def track_url(self):
+        return "https://example/" + self.track
+
+    def length(self):
+        return 100.0
+
+
+def test_mode_visibility_rechecks_each_session():
+    state_a = menu.state_from_player(FakePlayer("A", "track"))
     assert state_a["mode_key"] == "chromium|track-A"
     assert menu.mode_visibility(state_a["shuffle"], state_a["loop"]) == (True, True)
 
-    current["track"] = "B"
-    state_b = menu.get_state("chromium")
+    state_b = menu.state_from_player(FakePlayer("B", None, None))
     assert state_b["mode_key"] == "chromium|track-B"
     assert menu.mode_visibility(state_b["shuffle"], state_b["loop"]) == (False, False)
 
-    current["track"] = "A"
-    state_a2 = menu.get_state("chromium")
+    state_a2 = menu.state_from_player(FakePlayer("A", "track"))
     assert state_a2["mode_key"] == "chromium|track-A"
     assert menu.mode_visibility(state_a2["shuffle"], state_a2["loop"]) == (True, True)
 
 
-def test_loop_support_queries_only_selected_player(monkeypatch):
-    calls = []
-
-    def fake_pctl(*args, player=None, **_kwargs):
-        calls.append((player, args[0]))
-        if args[0] == "metadata":
-            fields = [
-                "Playing", player, "Title", "Artist", "Album", "",
-                "0.5", "0", "100", "track-A", "https://example/A",
-            ]
-            return subprocess.CompletedProcess(args, 0, menu.SEP.join(fields) + "\n", "")
-        return subprocess.CompletedProcess(args, 1, "", "No player could handle this command")
-
-    monkeypatch.setattr(menu, "pctl", fake_pctl)
-    state = menu.get_state("A")
+def test_loop_support_queries_only_selected_player():
+    state = menu.state_from_player(FakePlayer("A", None, None))
     assert state["loop"] is None
     assert menu.mode_visibility(state["shuffle"], state["loop"]) == (False, False)
-    assert calls
-    assert all(player == "A" for player, _command in calls)
+
+
+def test_popup_show_defers_slow_work(monkeypatch):
+    class FakeCard:
+        def set_opacity(self, _value):
+            pass
+
+        def set_margin_top(self, _value):
+            pass
+
+    class FakeWin:
+        def __init__(self):
+            self.order = []
+
+        def show_all(self):
+            self.order.append("show_all")
+
+    popup = object.__new__(menu.PlayerPopup)
+    popup.alive = False
+    popup.visible = False
+    popup.seed_loaded = True
+    popup.anim_from = 0
+    popup.anim_id = 0
+    popup.refresh_id = 0
+    popup.card = FakeCard()
+    popup.win = FakeWin()
+    popup.animate_open = lambda: False
+    popup._after_show = lambda: False
+    idle_calls = []
+    monkeypatch.setattr(menu.GLib, "idle_add", lambda cb: idle_calls.append(cb) or 1)
+    monkeypatch.setattr(menu.GLib, "timeout_add", lambda *_args: 1)
+    monkeypatch.setattr(menu, "HAVE_LAYER", False)
+    popup.show()
+    assert popup.win.order == ["show_all"]
+    assert idle_calls == [popup._after_show]
+    assert popup.visible is True

@@ -20,6 +20,7 @@ import urllib.request
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from i18n import t  # noqa: E402
 import players  # noqa: E402
+import mpris  # noqa: E402
 
 import gi
 
@@ -28,7 +29,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Pango", "1.0")
 
-from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
 try:
     gi.require_version("GtkLayerShell", "0.1")
@@ -40,11 +41,6 @@ except (ValueError, ImportError):
     HAVE_LAYER = False
 
 SEP = "\x1f"
-FMT = SEP.join([
-    "{{status}}", "{{playerName}}", "{{title}}", "{{artist}}",
-    "{{album}}", "{{mpris:artUrl}}", "{{volume}}",
-    "{{position}}", "{{mpris:length}}", "{{mpris:trackid}}", "{{xesam:url}}",
-])
 CACHE_DIR = os.environ.get("PM_CACHE") or os.path.join(
     os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
     "waybar-player",
@@ -212,105 +208,6 @@ scale:disabled trough slider {
 """
 
 
-def pctl(*args, player=None, timeout=PLAYERCTL_TIMEOUT):
-    """playerctl с жёстким таймаутом и обязательным -p."""
-    if not player:
-        return None
-    try:
-        return subprocess.run(
-            ["playerctl", "-p", player, *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
-def to_seconds(raw):
-    """playerctl отдаёт position/length в микросекундах."""
-    if not raw:
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if value < 0:
-        value = 0.0
-    return value / 1_000_000.0
-
-
-def fmt_time(seconds):
-    if seconds is None:
-        return "0:00"
-    try:
-        total = int(max(0, float(seconds)))
-    except (TypeError, ValueError):
-        return "0:00"
-    hours, rem = divmod(total, 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
-
-
-def volume_icon(pct):
-    if pct <= 0:
-        return "󰝟"
-    if pct < 34:
-        return "󰕿"
-    if pct < 67:
-        return "󰖀"
-    return "󰕾"
-
-
-def get_state(player):
-    if not player:
-        return None
-    res = pctl("metadata", "--format", FMT, player=player)
-    if res is None or res.returncode != 0:
-        return None
-    line = res.stdout.rstrip("\n")
-    if not line:
-        return None
-
-    parts = line.split(SEP)
-    if len(parts) < 11:
-        parts += [""] * (11 - len(parts))
-
-    (status, player, title, artist, album, art_url, vol_raw, pos_raw,
-     len_raw, track_id, track_url) = parts[:11]
-    try:
-        volume = max(0.0, min(1.0, float(vol_raw))) if vol_raw else None
-    except (TypeError, ValueError):
-        volume = None
-
-    length = to_seconds(len_raw)
-    if length is not None and length <= 0:
-        length = None
-
-    state = {
-        "status": status.strip().lower(),
-        "player": player.strip(),
-        "title": title,
-        "artist": artist,
-        "album": album,
-        "art_url": art_url,
-        "volume": volume,
-        "position": to_seconds(pos_raw) or 0.0,
-        "length": length,
-        "shuffle": parse_shuffle(_read_mode("shuffle", player)),
-        "loop": parse_loop(_read_mode("loop", player)),
-        "track_id": track_id,
-        "track_url": track_url,
-    }
-    state["mode_key"] = volume_track_key(state)
-    return state
-
-
 def parse_shuffle(value):
     text = (value or "").strip().lower()
     if text in ("on", "off"):
@@ -335,13 +232,6 @@ def next_loop(value):
 
 def loop_command(value):
     return {"none": "None", "track": "Track", "playlist": "Playlist"}.get(value)
-
-
-def _read_mode(command, player):
-    res = pctl(command, player=player)
-    if res is None or res.returncode != 0:
-        return None
-    return res.stdout.strip()
 
 
 def cleanup_cover_cache(max_age_days=CACHE_MAX_AGE_DAYS):
@@ -662,8 +552,70 @@ def pixbuf_accent(pixbuf):
         return DEFAULT_ACCENT
 
 
+def volume_icon(pct):
+    if pct <= 0:
+        return "󰝟"
+    if pct < 34:
+        return "󰕿"
+    if pct < 67:
+        return "󰖀"
+    return "󰕾"
+
+
+def to_seconds(raw):
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, value / 1_000_000.0)
+
+
+def fmt_time(seconds):
+    try:
+        total = int(max(0, float(seconds)))
+    except (TypeError, ValueError):
+        total = 0
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return "{}:{:02d}:{:02d}".format(hours, minutes, secs)
+    return "{}:{:02d}".format(minutes, secs)
+
+
+def state_from_player(player, position=0.0):
+    if player is None:
+        return None
+    shuffle = None
+    if player.shuffle is not None:
+        shuffle = "on" if player.shuffle else "off"
+    state = {
+        "status": (player.status or "stopped").lower(),
+        "player": player.base_name,
+        "title": player.title(),
+        "artist": player.artist(),
+        "album": player.album(),
+        "art_url": player.art_url(),
+        "volume": player.volume,
+        "position": position,
+        "length": player.length(),
+        "shuffle": shuffle,
+        "loop": player.loop if player.loop in ("none", "track", "playlist") else None,
+        "track_id": player.track_id(),
+        "track_url": player.track_url(),
+        "can_next": player.can_next,
+        "can_previous": player.can_previous,
+        "can_pause": player.can_pause,
+        "can_control": player.can_control,
+    }
+    state["mode_key"] = volume_track_key(state)
+    return state
+
+
 class PlayerPopup:
-    def __init__(self):
+    def __init__(self, resident=False):
+        self.resident = resident
         self.state = None
         self.art_url = None
         self.art_token = 0
@@ -680,6 +632,16 @@ class PlayerPopup:
         self.volume_mode = "player"
         self.player = ""
         self.selected = None
+        self.selected_player = None
+        self.position = 0.0
+        self.manager = mpris.MprisManager(self._manager_changed)
+        self.refresh_debounce = 0
+        self.visible = False
+        self.seed_loaded = False
+        self.volume_worker = False
+        self.system_volume = None
+        self.workspace_busy = False
+        self.workspace_result = None
 
         self.seek_timeout = 0
         self.seek_dragging = False
@@ -925,6 +887,17 @@ class PlayerPopup:
             self.win.add(self.card)
 
         self.set_placeholder()
+        self.manager.start(self._manager_ready)
+
+    def _manager_ready(self):
+        self._manager_changed()
+
+    def _manager_changed(self):
+        if not self.alive:
+            return
+        if self.refresh_debounce:
+            return
+        self.refresh_debounce = GLib.timeout_add(50, self.refresh_once)
 
     def _control(self, label, tooltip, callback):
         btn = Gtk.Button(label=label)
@@ -936,25 +909,83 @@ class PlayerPopup:
 
     # --- жизненный цикл -----------------------------------------------------
 
+    def _load_seed(self):
+        path = players.RUNTIME_DIR / "state.json"
+        try:
+            with path.open(encoding="utf-8") as handle:
+                seed = json.load(handle)
+        except (OSError, ValueError):
+            return
+        if not isinstance(seed, dict) or not seed:
+            return
+        try:
+            seed_volume = float(seed.get("volume")) if seed.get("volume") not in (None, "") else None
+        except (TypeError, ValueError):
+            seed_volume = None
+        state = {
+            "status": seed.get("status") or "stopped",
+            "player": seed.get("player") or "",
+            "title": seed.get("title") or "",
+            "artist": seed.get("artist") or "",
+            "album": seed.get("album") or "",
+            "art_url": seed.get("art_url") or "",
+            "volume": seed_volume,
+            "position": 0.0,
+            "length": None,
+            "shuffle": None,
+            "loop": None,
+            "track_id": seed.get("track_id") or "",
+            "track_url": seed.get("track_url") or "",
+            "can_next": True,
+            "can_previous": True,
+            "can_pause": True,
+            "can_control": True,
+        }
+        self.update_from_state(state)
+        art_url = seed.get("art_url") or ""
+        if art_url:
+            cached = os.path.join(
+                CACHE_DIR,
+                "popup-" + hashlib.sha1(art_url.encode("utf-8")).hexdigest() + ".img",
+            )
+            if os.path.isfile(cached):
+                self.set_cover(cached)
+
+    def _after_show(self):
+        self.refresh()
+        self.check_workspace()
+        if self.ws_timer:
+            GLib.source_remove(self.ws_timer)
+        self.ws_timer = GLib.timeout_add(500, self.check_workspace)
+        return False
+
     def show(self):
+        self.alive = True
+        self.visible = True
+        if not self.seed_loaded:
+            self._load_seed()
+            self.seed_loaded = True
         self.anim_from = max(0, CARD_TOP_MARGIN - 10)
-        # Сразу показываем карточку полупрозрачной: нет ощущения пустого окна,
-        # а короткий fade/слайд только завершает появление.
         self.card.set_opacity(0.30)
         if HAVE_LAYER:
             self.card.set_margin_top(self.anim_from)
 
         self.win.show_all()
-        self.refresh()
+        GLib.idle_add(self._after_show)
 
         self.anim_start = time.monotonic()
+        if self.anim_id:
+            GLib.source_remove(self.anim_id)
         self.anim_id = GLib.timeout_add(16, self.animate_open)
-        self.refresh_id = GLib.timeout_add(1000, self.refresh)
+        if self.refresh_id:
+            GLib.source_remove(self.refresh_id)
+        self.refresh_id = GLib.timeout_add(1000, self.refresh_once)
 
-        # Закрываем меню при смене воркспейса. Polling дешевле и надёжнее
-        # долгоживущего niri event-stream (его пришлось бы отдельно убивать).
-        self.check_workspace()
-        self.ws_timer = GLib.timeout_add(500, self.check_workspace)
+    def toggle(self):
+        if self.visible:
+            self.close()
+        else:
+            self.show()
 
     def animate_open(self):
         if not self.alive:
@@ -974,7 +1005,21 @@ class PlayerPopup:
             return False
         return True
 
+    def _cancel_timers(self):
+        for attr in ("refresh_id", "vol_timeout", "volume_readback_id",
+                     "seek_timeout", "anim_id", "fade_id", "ws_timer"):
+            source = getattr(self, attr, 0)
+            setattr(self, attr, 0)
+            if source and GLib.MainContext.default().find_source_by_id(source) is not None:
+                GLib.source_remove(source)
+
     def close(self, *_args):
+        if self.resident:
+            self.win.hide()
+            self.visible = False
+            self.workspace_id = None
+            self._cancel_timers()
+            return
         self.win.destroy()
 
     def _focused_workspace_id(self):
@@ -998,17 +1043,26 @@ class PlayerPopup:
         return None
 
     def check_workspace(self):
-        if not self.alive:
+        if not self.alive or self.workspace_busy:
             return False
-        focused = self._focused_workspace_id()
-        if focused is None:
-            return True
+        self.workspace_busy = True
+
+        def worker():
+            focused = self._focused_workspace_id()
+            GLib.idle_add(self._workspace_done, focused)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return False
+
+    def _workspace_done(self, focused):
+        self.workspace_busy = False
+        if not self.alive or focused is None:
+            return False
         if self.workspace_id is None:
             self.workspace_id = focused
         elif focused != self.workspace_id:
             self.close()
-            return False
-        return True
+        return False
 
     def on_pointer_click(self, _widget, event):
         if event.button != 1:
@@ -1039,7 +1093,7 @@ class PlayerPopup:
             self.fade_id,
             self.ws_timer,
         ):
-            if source:
+            if source and GLib.MainContext.default().find_source_by_id(source) is not None:
                 GLib.source_remove(source)
         self.refresh_id = 0
         self.vol_timeout = 0
@@ -1181,6 +1235,40 @@ class PlayerPopup:
             )
             self._set_mode_active(self.loop_btn, loop != "none")
 
+    def _start_wpctl_read(self):
+        if self.volume_worker:
+            return
+        self.volume_worker = True
+
+        def worker():
+            value = wpctl_get_volume()
+            GLib.idle_add(self._wpctl_read_done, value)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _wpctl_read_done(self, value):
+        self.volume_worker = False
+        if not self.alive:
+            return False
+        if value is None:
+            self.volume_mode = "hidden"
+            self.vol_btn.hide()
+            self.vol_scale.hide()
+            if self.info_stack.get_visible_child_name() == "volume":
+                self.info_stack.set_visible_child_name("status")
+            return False
+        self.system_volume = value
+        pct = int(round(value * 100))
+        self.vol_btn.set_sensitive(True)
+        self.vol_btn.set_label(volume_icon(pct))
+        self.vol_value.set_text(f"{pct}%")
+        self.vol_scale.set_sensitive(True)
+        if not self.vol_dragging:
+            self.updating_vol = True
+            self.vol_scale.set_value(pct)
+            self.updating_vol = False
+        return False
+
     def _update_volume(self, st):
         marked = (
             self.volume_ineffective_key is not None
@@ -1199,16 +1287,11 @@ class PlayerPopup:
         self.vol_btn.show()
         self.vol_scale.show()
         if self.volume_mode == "sink":
-            system = wpctl_get_volume()
-            if system is None:
-                self.volume_mode = "hidden"
-                self.vol_btn.hide()
-                self.vol_scale.hide()
-                if self.info_stack.get_visible_child_name() == "volume":
-                    self.info_stack.set_visible_child_name("status")
-                return
-            pct = int(round(system * 100))
             self.vol_title.set_text(t("menu.system_volume"))
+            if self.system_volume is None:
+                self._start_wpctl_read()
+                return
+            pct = int(round(self.system_volume * 100))
         else:
             pct = int(round((st["volume"] or 0.0) * 100))
             self.vol_title.set_text(t("menu.volume"))
@@ -1227,6 +1310,10 @@ class PlayerPopup:
             widget.set_sensitive(sensitive)
         if not sensitive:
             self.seek.set_sensitive(False)
+        current = self.state or {}
+        self.prev_btn.set_sensitive(sensitive and current.get("can_previous", True))
+        self.next_btn.set_sensitive(sensitive and current.get("can_next", True))
+        self.play_btn.set_sensitive(sensitive and current.get("can_control", True))
 
     def set_disconnected(self):
         self.state = None
@@ -1356,56 +1443,89 @@ class PlayerPopup:
                 self.updating_seek = False
                 self.cur_label.set_text(fmt_time(shown))
 
+    def _state_from_player(self, player):
+        return state_from_player(player, self.position)
+
+    def _position_ready(self, value, _error):
+        if not self.alive or self.seek_dragging or value is None:
+            return False
+        try:
+            self.position = float(value) / 1_000_000.0
+        except (TypeError, ValueError):
+            return False
+        if self.length and self.length > 0:
+            shown = min(self.position, self.length)
+            self.updating_seek = True
+            self.seek.set_value(shown)
+            self.updating_seek = False
+            self.cur_label.set_text(fmt_time(shown))
+        return False
+
     def refresh(self):
         if not self.alive:
             return False
-        selected = players.update_selection()
-        if not selected:
+        by_name = self.manager.players
+        names = list(by_name)
+        statuses = {name: by_name[name].status for name in names}
+        identities = {
+            name: {
+                "desktop_entry": by_name[name].desktop_entry,
+                "identity": by_name[name].identity,
+                "base": by_name[name].base_name,
+            }
+            for name in names
+        }
+        selected = players.update_selection(names, statuses, identities)
+        self.selected = selected
+        player = by_name.get(selected) if selected else None
+        self.selected_player = player
+        if player is None:
             self.set_disconnected()
             return True
-        self.selected = selected
-        st = get_state(selected)
-        if st is None:
-            self.set_disconnected()
-        else:
-            self.update_from_state(st)
+        state = self._state_from_player(player)
+        self.update_from_state(state)
+        player.get_position(self._position_ready)
         return True
 
     def refresh_once(self):
+        self.refresh_debounce = 0
         self.refresh()
         return False
 
-    # --- действия -----------------------------------------------------------
-
-    def run_action(self, *args):
-        selected = players.update_selection() or self.selected
-        if not selected:
-            return
-        pctl(*args, player=selected, timeout=2)
-        # Меню НЕ закрывается после play/pause/next: это раздражало.
+    def _after_action(self):
         GLib.timeout_add(180, self.refresh_once)
 
     def on_prev(self, *_args):
-        self.run_action("previous")
+        if self.selected_player is not None and self.selected_player.can_previous:
+            self.selected_player.previous()
+            self._after_action()
 
     def on_play_pause(self, *_args):
-        self.run_action("play-pause")
+        if self.selected_player is not None and self.selected_player.can_control:
+            self.selected_player.play_pause()
+            self._after_action()
 
     def on_next(self, *_args):
-        self.run_action("next")
+        if self.selected_player is not None and self.selected_player.can_next:
+            self.selected_player.next()
+            self._after_action()
 
     def on_shuffle(self, *_args):
-        if self.state is None or self.state.get("shuffle") is None:
+        player = self.selected_player
+        if player is None or player.shuffle is None:
             return
-        self.run_action("shuffle", "Toggle")
+        player.set_property("Shuffle", GLib.Variant("b", not player.shuffle))
+        self._after_action()
 
     def on_loop(self, *_args):
-        if self.state is None:
+        player = self.selected_player
+        if player is None or player.loop not in ("none", "track", "playlist"):
             return
-        target = next_loop(self.state.get("loop"))
+        target = next_loop(player.loop)
         command = loop_command(target)
         if command:
-            self.run_action("loop", command)
+            player.set_property("LoopStatus", GLib.Variant("s", command))
+            self._after_action()
 
     # --- громкость ----------------------------------------------------------
 
@@ -1416,7 +1536,7 @@ class PlayerPopup:
         if self.state is None or self.volume_mode == "hidden":
             return
         if self.volume_mode == "sink":
-            value = wpctl_get_volume()
+            value = self.system_volume
             if value is None:
                 return
         else:
@@ -1443,40 +1563,50 @@ class PlayerPopup:
         if not self.alive:
             return False
         if self.volume_mode == "sink":
-            if wpctl_set_volume(pct / 100):
-                GLib.timeout_add(150, self.refresh_once)
+            target = pct / 100
+
+            def worker():
+                ok = wpctl_set_volume(target)
+                if ok:
+                    GLib.idle_add(self.refresh_once)
+                return False
+
+            threading.Thread(target=worker, daemon=True).start()
             return False
         if self.volume_mode == "hidden":
             return False
-
+        player = self.selected_player
+        if player is None:
+            return False
         target = pct / 100
-        player = self.player
-        result = pctl("volume", "{:.2f}".format(target), player=player)
-        set_ok = result is not None and result.returncode == 0
+        player.set_property("Volume", GLib.Variant("d", target))
         if self.volume_readback_id:
             GLib.source_remove(self.volume_readback_id)
-            self.volume_readback_id = 0
         if self.state is not None and self.state["status"] == "playing":
             self.volume_readback_id = GLib.timeout_add(
-                250, self._verify_player_volume, target, player, set_ok, self.volume_key
+                250, self._verify_player_volume, target, player, self.volume_key
             )
         return False
 
-    def _verify_player_volume(self, target, player, set_ok, key):
+    def _verify_player_volume(self, target, player, key):
         self.volume_readback_id = 0
-        if (not self.alive or self.player != player
+        if (not self.alive or self.selected_player is not player
                 or self.volume_key != key or self.state is None):
             return False
-        result = pctl("volume", player=player)
-        actual = None
-        if result is not None and result.returncode == 0:
+
+        def got_volume(value, _error):
+            if not self.alive or self.state is None:
+                return False
             try:
-                actual = float(result.stdout.strip())
+                actual = float(value) if value is not None else None
             except (TypeError, ValueError):
                 actual = None
-        if volume_check_marks(self.state["status"], set_ok, actual, target):
-            self.volume_ineffective_key = self.volume_key
-            self.refresh_once()
+            if volume_check_marks(self.state["status"], True, actual, target):
+                self.volume_ineffective_key = self.volume_key
+                self.refresh_once()
+            return False
+
+        player.get_property("Volume", got_volume)
         return False
 
     def on_volume_press(self, *_args):
@@ -1516,7 +1646,14 @@ class PlayerPopup:
         if not self.alive or not self.length or self.length <= 0:
             return False
         target = max(0.0, min(float(self.seek.get_value()), float(self.length)))
-        pctl("position", f"{target:.3f}", player=self.player, timeout=2)
+        player = self.selected_player
+        if player is not None:
+            track_id = player.track_id()
+            if track_id:
+                player.set_position(track_id, int(target * 1_000_000))
+            else:
+                player.seek(int((target - self.position) * 1_000_000))
+        self.position = target
         self.last_seek = time.monotonic()
         self.cur_label.set_text(fmt_time(target))
         GLib.timeout_add(200, self.refresh_once)
@@ -1540,9 +1677,34 @@ def main():
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
 
-    popup = PlayerPopup()
-    popup.show()
-    Gtk.main()
+    resident = "--resident" in sys.argv[1:]
+    popup = PlayerPopup(resident=resident)
+    if resident:
+        connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        node = Gio.DBusNodeInfo.new_for_xml(
+            '<node><interface name="org.waybarplayer.Popup">'
+            '<method name="Toggle"/></interface></node>'
+        )
+        interface = node.interfaces[0]
+
+        def on_method(_connection, _sender, _path, _iface, _method, _params, invocation):
+            popup.toggle()
+            invocation.return_value(None)
+
+        connection.register_object(
+            "/org/waybarplayer/Popup", interface, on_method, None, None
+        )
+        Gio.bus_own_name_on_connection(
+            connection,
+            "org.waybarplayer.Popup",
+            Gio.BusNameOwnerFlags.NONE,
+            None,
+            None,
+        )
+        Gtk.main()
+    else:
+        popup.show()
+        Gtk.main()
     return 0
 
 

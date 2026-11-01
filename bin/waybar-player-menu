@@ -1,113 +1,81 @@
-#!/usr/bin/env bash
-#
-# waybar-player-menu — открыть/закрыть всплывающее меню waybar-player.
-#
-# Скрипт остаётся маленькой bash-обёрткой: он отвечает за single-instance
-# (flock + pid), а весь GTK-интерфейс живёт в player-menu.py.
-#
-# player-menu.py ищется:
-#   1. в ../share/waybar-player/player-menu.py (установка в PREFIX);
-#   2. рядом с этим скриптом (старая ручная установка);
-#   3. в ../share/player-menu.py (запуск из git-чекаута);
-#   4. в /usr/share/waybar-player/player-menu.py (пакет / системная установка).
+#!/usr/bin/env python3
+"""Toggle the resident waybar-player popup over a private D-Bus name."""
 
-set -uo pipefail
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
 
-export PYTHONUTF8=1
+import gi
 
-SCRIPT_PATH=$(readlink -f -- "${BASH_SOURCE[0]}")
-readonly SCRIPT_PATH
-SCRIPT_DIR=$(dirname -- "$SCRIPT_PATH")
-readonly SCRIPT_DIR
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
 
-readonly RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/waybar-player"
-readonly CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/waybar-player"
-readonly PID_FILE="$RUNTIME_DIR/menu.pid"
-readonly LOCK_FILE="$RUNTIME_DIR/menu.lock"
-readonly LOG_FILE="$CACHE_DIR/menu.log"
+NAME = "org.waybarplayer.Popup"
+PATH = "/org/waybarplayer/Popup"
+IFACE = "org.waybarplayer.Popup"
+_HERE = Path(__file__).resolve().parent
 
-mkdir -p "$RUNTIME_DIR" "$CACHE_DIR" 2>/dev/null
 
-notify_user() {
-    local summary=$1 body=${2:-}
-    if command -v notify-send >/dev/null 2>&1; then
-        timeout 3 notify-send -a "Waybar" -i audio-x-generic -t 3500 "$summary" "$body" 2>/dev/null
-    elif command -v zenity >/dev/null 2>&1; then
-        timeout 5 zenity --info --title="$summary" --text="${body:-$summary}" --timeout=4 2>/dev/null
-    fi
-}
+def find_menu():
+    for candidate in (
+        _HERE.parent / "share" / "waybar-player" / "player-menu.py",
+        _HERE / "player-menu.py",
+        _HERE.parent / "share" / "player-menu.py",
+        Path("/usr/share/waybar-player/player-menu.py"),
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
-find_menu_py() {
-    local candidate
-    for candidate in \
-        "$SCRIPT_DIR/../share/waybar-player/player-menu.py" \
-        "$SCRIPT_DIR/player-menu.py" \
-        "$SCRIPT_DIR/../share/player-menu.py" \
-        "/usr/share/waybar-player/player-menu.py"; do
-        if [[ -f $candidate ]]; then
-            printf '%s\n' "$candidate"
+
+def toggle():
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        bus.call_sync(
+            NAME, PATH, IFACE, "Toggle", None, None,
+            Gio.DBusCallFlags.NONE, 300, None,
+        )
+        return True
+    except GLib.Error:
+        return False
+
+
+def main():
+    menu_py = find_menu()
+    if menu_py is None:
+        print("waybar-player: player-menu.py not found", file=sys.stderr)
+        return 1
+    if toggle():
+        return 0
+
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache"))
+    cache = cache / "waybar-player"
+    cache.mkdir(parents=True, exist_ok=True)
+    log = cache / "menu.log"
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env.setdefault("PM_CACHE", str(cache))
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write("\n--- resident start ---\n")
+        handle.flush()
+        subprocess.Popen(
+            [sys.executable, str(menu_py), "--resident"],
+            stdout=subprocess.DEVNULL,
+            stderr=handle,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            env=env,
+        )
+    deadline = time.monotonic() + 1.5
+    while time.monotonic() < deadline:
+        if toggle():
             return 0
-        fi
-    done
+        time.sleep(0.05)
+    print("waybar-player: popup did not start", file=sys.stderr)
     return 1
-}
 
-if ! command -v playerctl >/dev/null 2>&1; then
-    notify_user "Медиаплеер" "playerctl не установлен"
-    exit 1
-fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-    notify_user "Медиаплеер" "python3 не установлен"
-    exit 1
-fi
-
-MENU_PY=$(find_menu_py) || {
-    notify_user "Медиаплеер" "player-menu.py не найден (ожидается /usr/share/waybar-player/player-menu.py)"
-    exit 1
-}
-readonly MENU_PY
-
-# --- одна копия меню + toggle ------------------------------------------------
-
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    old_pid=$(cat "$PID_FILE" 2>/dev/null || true)
-    killed=0
-    if [[ ${old_pid:-} =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
-        kill "$old_pid" 2>/dev/null && killed=1
-    fi
-    if (( killed == 0 )); then
-        # Страховка от пустого pid-файла: ищем именно bash с этим скриптом.
-        while read -r p; do
-            [[ -n ${p:-} ]] || continue
-            [[ $p == "$$" ]] && continue
-            cmd=$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null) || continue
-            [[ $cmd =~ ^(bash|/usr/bin/bash)[[:space:]]+[^[:space:]]*waybar-player-menu[[:space:]]*$ ]] || continue
-            kill "$p" 2>/dev/null && killed=1
-        done < <(pgrep -f 'waybar-player-menu' 2>/dev/null || true)
-    fi
-    exit 0
-fi
-
-printf '%s\n' "$$" >"$PID_FILE" 2>/dev/null
-
-child=""
-cleanup() {
-    [[ -n $child ]] && kill "$child" 2>/dev/null
-    if [[ "$(cat "$PID_FILE" 2>/dev/null || true)" == "$$" ]]; then
-        rm -f "$PID_FILE" 2>/dev/null
-    fi
-}
-trap 'cleanup; exit 0' INT TERM
-trap cleanup EXIT
-
-export PM_CACHE="$CACHE_DIR"
-: >"$LOG_FILE" 2>/dev/null
-
-# 9>&- закрывает унаследованный flock-дескриптор в Python: блокировка
-# снимается вместе с завершением bash-обёртки.
-python3 "$MENU_PY" 9>&- 2>>"$LOG_FILE" &
-child=$!
-wait "$child" 2>/dev/null
-child=""
+if __name__ == "__main__":
+    sys.exit(main())
