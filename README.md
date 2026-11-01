@@ -37,6 +37,9 @@ English popup; the Russian popup is shown in the Russian section below.
   full bus name.
 - The popup is resident: the first show reuses an already-created GTK window,
   with text seeded from the status process.
+- Position advances locally every second while visible and Playing; it re-syncs
+  from MPRIS every 5 s and on Seeked/status/track changes. Hidden popup timers
+  are stopped.
 
 ## Requirements (Arch)
 

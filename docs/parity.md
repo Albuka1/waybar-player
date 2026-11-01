@@ -25,3 +25,14 @@ The JSON emitted by `waybar-player-status` is byte-compatible with 0.3.1:
 - Volume: same 250 ms read-back rule; ineffective-player key is
   `(full bus name, trackid|url|title+artist)`.
 - No external player-controller dependency.
+
+
+## 0.4.1
+
+- Position is interpolated locally once per second while the popup is visible
+  and the player is Playing. It is re-synced from `Properties.Get Position`
+  every 5 s and on `Seeked`, status change and track change.
+- Paused/stopped playback does not advance the position.
+- All position timers stop when the resident popup is hidden; show restarts
+  them. Dragging suppresses updates and the guard is cleared on hide.
+- Players without Position disable the seek slider.

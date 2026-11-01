@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- Fix frozen popup position: local one-second interpolation while Playing,
+  re-sync from MPRIS every 5 s and on Seeked/status/track changes.
+- Timers start in show and stop in hide; hidden resident popup performs no
+  position polling. Drag guard is always cleared on hide.
+
 ## 0.4.0
 
 - Direct async MPRIS over Gio D-Bus; no playerctl.
