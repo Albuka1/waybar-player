@@ -1,150 +1,27 @@
-# Parity: старый `player-status.sh` → новый `waybar-player-status`
+# Parity with 0.3.1
 
-Новый статус — один долгоживущий Python-процесс. Он читает
-`playerctl --follow metadata --format ...` в отдельном потоке, а кадры/бегущую
-строку двигает таймер в главном цикле. Формат JSON для Waybar не изменился.
+The JSON emitted by `waybar-player-status` is byte-compatible with 0.3.1:
 
-| Старое поведение | Как реализовано сейчас |
-|---|---|
-| `playerctl metadata --format ...` каждые 0.2 с при воспроизведении | Один дочерний `playerctl --follow metadata --format ...`; новые события приходят сразу |
-| `playerctl metadata` каждые 1 с на паузе/остановке/без плеера | Тот же follow-процесс; при завершении — idle-вывод и перезапуск с backoff 1, 2, 4, 5 с |
-| Кадры `◐ ◓ ◑ ◒` каждые 0.2 с | `FRAMES[tick % 4]`, таймер 0.2 с |
-| Бегущая строка сдвигается раз в 2 тика (0.4 с) | `offset += 1` при `tick % 2 == 0` |
-| Короткий заголовок не скроллится | `marquee()` возвращает строку как есть |
-| Длинный заголовок на паузе обрезается с `…` | `truncate_title()` |
-| Пауза: `󰏤  <title>`, class `paused` | То же |
-| Остановка с title: `󰏤  <title>`, class `stopped` | То же |
-| Остановка без title: `󰏤  Остановлено` | То же |
-| Нет плеера: `󰎆`, tooltip «Нет активного MPRIS-плеера» | То же |
-| Tooltip: title / artist / album / player / volume / status / подсказки | Те же строки и порядок, включая `ЛКМ — меню • СКМ — предыдущий • ПКМ — пауза/плей` и `Колесо — громкость` |
-| Русские статусы: `Играет`, `Пауза`, `Остановлен` | `status_ru()` |
-| `percentage` = громкость в процентах, целое | `volume_percent()` сохраняет разбор строки (целая часть ×100 + первые 2 цифры дроби) |
-| `TITLE_WIDTH=30` | `WAYBAR_PLAYER_TITLE_WIDTH`, по умолчанию 30 |
-| Сброс offset при смене трека по ключу `player|title|artist` | То же |
-| JSON: `text`, `tooltip`, `class`, при наличии — `percentage` | `json.dumps(..., ensure_ascii=False, separators=(",", ":"))` |
-| Экранирование делает Waybar (`escape: true`) | То же |
-| `class`: `playing` / `paused` / `stopped` | То же |
+```json
+{"text":"...","tooltip":"...","class":"playing|paused|stopped","percentage":N}
+```
 
-## Отличия от старого поведения
+- `text`, `tooltip`, `class`, `percentage` keep the same meaning and the same
+  i18n strings.
+- Frames still advance every 0.2 s while Playing; paused/idle text is stable.
+- Paused and stopped classes and icons are unchanged.
+- The selection policy is unchanged: Playing > Paused, sticky current, priority,
+  then recent activity.
 
-1. **Частота процессов.** Было ~5 запусков `playerctl` в секунду при
-   воспроизведении; теперь один долгоживущий `playerctl --follow` и один
-   Python-процесс. При отсутствии плеера — один перезапуск в секунду.
-2. **Задержка обновления.** Смена трека, пауза и громкость приходят событием и
-   отображаются сразу, а не на следующем тике 0.2/1 с.
-3. **Нет `timeout` вокруг каждого вызова.** Follow-процесс долгоживущий; если
-   `playerctl` зависнет, обновления статуса остановятся до перезапуска
-   скрипта Waybar. Это осознанный компромисс ради отсутствия спавна процессов.
-4. **Нет отдельного idle-таймера на 1 с для событий.** Таймер 1 с используется
-   только для перерисовки, события обрабатываются сразу.
-5. **Fallback при отсутствии `playerctl`.** Процесс выводит idle-состояние и
-   перезапускает follow с экспоненциальной задержкой 1, 2, 4, 5 с (максимум
-   5 с). Молчаливого зависания нет: на время отсутствия плеера идёт idle-вывод.
-6. **Громкость.** `playerctl --follow` присылает `volume` вместе с metadata;
-   отдельный опрос громкости раз в 2 с не нужен (проверено на VLC: изменение
-   volume пришло событием, проценты в статусе обновились).
+## What changed in 0.4.0
 
-## Отличия меню (не статуса), внесённые при упаковке
-
-- Обложки: `https` как раньше, плюс `file://` только внутри белого списка
-  (`/tmp`, `XDG_RUNTIME_DIR`, `XDG_CACHE_HOME`/`~/.cache`,
-  `WAYBAR_PLAYER_ART_DIRS`). Проверяются realpath (симлинк наружу
-  отклоняется), обычный файл, размер ≤ 8 МБ и сигнатура PNG/JPEG/WebP/GIF.
-  Остальные `file://`, loopback/private/link-local и редиректы на них
-  отклоняются. Временные обложки Chromium в `/tmp` обычно работают.
-- Загрузка обложки идёт в фоне, до готовности — заглушка; кэш `popup-*.img`
-  старше 14 дней удаляется при старте.
-- Закрытие по смене воркспейса опрашивает niri раз в **0.5 с** (было 0.2 с).
-
-### Сохранено без изменений
-
-- Play/pause **не закрывает** меню — ровно как в исходном `player-menu.sh`;
-  отдельного изменения поведения здесь нет.
-
-
-## Дополнительно в 0.2.0
-
-- **Shuffle/loop.** Две кнопки рядом с prev/play/next читают
-  `playerctl shuffle` и `playerctl loop`. Если команда вернула ошибку или пусто,
-  кнопка скрыта (Chromium). Переключение: `shuffle Toggle`; повтор по кругу
-  `None → Track → Playlist`. Иконки Nerd Font, подсказки через i18n.
-- **Акцент из обложки.** Pixbuf сжимается до 1×1; цвет поднимается по светлоте
-  и насыщенности до читаемого порога и применяется к заголовку, ползункам и
-  верхней полосе. Без обложки — `#ff8c00`; `WAYBAR_PLAYER_ACCENT=fixed`
-  отключает выбор цвета из обложки.
-- **Fade.** При смене трека обложка/текст появляются за ~150 мс (10 шагов по
-  15 мс); лишних запросов к плееру нет.
-
-
-## 0.2.1
-
-- **Акцент в состояниях кнопок.** Ховер, нажатие и фокус управляющих кнопок,
-  активные shuffle/loop и ховер play используют акцент обложки. Для play
-  значок выбирается чёрным или белым по контрасту; `fixed` остаётся оранжевым.
-- **Громкость с проверкой.** После установки значения через ~250 мс читается
-  `playerctl volume`. Если свойство не поддерживается или значение не
-  изменилось, плеер помечается как неэффективный. `WAYBAR_PLAYER_VOLUME_FALLBACK`
-  (`sink` по умолчанию) переключает слайдер на `wpctl` и подпись
-  «Системная громкость»; `hide` скрывает слайдер. `wpctl` — опциональная
-  зависимость (`wireplumber`).
-- **Chromium/Yandex Music:** громкость выставляется, но обратно возвращается
-  `1.000000`; shuffle/loop не поддерживаются. См. `docs/players.md`.
-- **Firefox:** на момент диагностики MPRIS-плеера не было; обложка не
-  воспроизведена, регрессия не подтверждена. При появлении плеера проверить
-  `mpris:artUrl` по белому списку.
-
-
-## 0.2.2
-
-- **Громкость привязана к треку.** Пометка «неэффективна» хранится для
-  `(player, trackid)`; если `trackid` нет — `xesam:url`, иначе `title|artist`.
-  При смене трека пометка сбрасывается.
-- **Только Playing.** Проверка выполняется и результат запоминается только при
-  `status == playing`. На паузе/остановке слайдер остаётся родным.
-- **Неоднозначный результат не переключает режим.** Ошибка установки, ошибка
-  чтения или статус не Playing считаются «родной громкостью».
-- **Режимы.** `WAYBAR_PLAYER_VOLUME_MODE=auto|player|sink|hide` (по умолчанию
-  `auto`). `WAYBAR_PLAYER_VOLUME_FALLBACK=sink|hide` — старый синоним для
-  `auto`. Подпись «Системная громкость» показывается только в режиме `sink`.
-
-
-## 0.2.3
-
-- Поддержка shuffle/loop перечитывается при каждом refresh через `playerctl`
-  и проверяется в контексте ключа `(player, mpris:trackid | xesam:url |
-  title+artist)`. При смене ключа кнопки немедленно скрываются и показываются
-  заново только при непустом ответе. Ошибка/пустой ответ — кнопка скрыта.
-- Ограничение Chromium: один MPRIS-сеанс на браузер. Пока вкладка с прежним
-  медиа не нажмёт play, `playerctl` видит только текущую сессию; это не
-  кеш приложения, а поведение браузера.
-
-
-## 0.3.0
-
-- **Общий выбор плеера.** `share/players.py` читает `playerctl -l` и статусы
-  через `playerctl -p X status`; Playing важнее Paused/Stopped, текущий
-  играющий остаётся липким, `WAYBAR_PLAYER_PRIORITY` и `last_active` решают
-  остальное. Состояние лежит в `$XDG_RUNTIME_DIR/waybar-player/selection.json`
-  под `flock`.
-- **Все запросы/команды — с `-p`.** Статус слушает `playerctl -a --follow`,
-  чтобы видеть события всех плееров, и пересчитывает выбор при событиях.
-  Меню, громкость, seek и действия используют выбранный `-p`.
-- **`bin/waybar-player-ctl`** для кликов/колеса: play-pause, previous, next,
-  volume-up/down, shuffle, loop; всегда выбранный плеер.
-- **Нет неявного первого-capable.** Без `-p` playerctl может отправить loop в
-  чужой плеер; этот путь больше не используется для управления.
-
-
-## 0.3.1
-
-- **Регрессия паузы.** `playerctl -a --follow` отдаёт `{{playerName}}` как
-  базовое имя (`chromium`), а выбранный MPRIS-идентификатор — экземпляр
-  (`chromium.instanceNNN`). Старое сравнение `item["player"] == selected` не
-  совпадало, поэтому события паузы не применялись. Теперь любое событие
-  перечитывает выбранный плеер через `playerctl -p ... metadata`.
-- **Страховочный опрос.** Раз в секунду пересчитываются статусы всех плееров;
-  при изменении статуса/выбора читается выбранный плеер и выводится JSON.
-  Кадры диска идут только при `status == playing`.
-- **Буферизация.** stdout переведён в line-buffered, каждая строка пишется с
-  `flush=True`; тест с pipe проверяет появление `class=paused` примерно за
-  секунду после смены статуса.
+- Data source: direct async Gio D-Bus instead of external player processes.
+- Identity: full bus name everywhere; base names are display-only.
+- Status: PropertiesChanged/NameOwnerChanged events, 50 ms debounce, 30 s safety
+  resync, line-buffered output only when the JSON changes.
+- Popup: resident hidden window, seeded first frame, deferred refresh and
+  workspace checks.
+- ctl: full-bus-name D-Bus commands.
+- Volume: same 250 ms read-back rule; ineffective-player key is
+  `(full bus name, trackid|url|title+artist)`.
+- No external player-controller dependency.

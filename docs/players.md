@@ -1,105 +1,92 @@
-# MPRIS: несколько плееров
+# MPRIS players and identity
 
-Дата проверки: 2026-10-31. Контекст: Яндекс Музыка — отдельное Electron-приложение
-с собственным MPRIS-именем (`chromium.instance...`), YouTube — Firefox
-(`firefox`). Это не один MPRIS на браузер.
+waybar-player talks to MPRIS directly over Gio D-Bus. It never uses a shell
+player controller and never relies on an implicit "first player" for commands.
 
-## Что было видно в момент проверки
+## Identity
 
-```text
-$ playerctl -l
-chromium.instance125864
-
-$ playerctl -a metadata --format '{{playerName}} {{status}} | {{title}}'
-chromium Playing | In the Field of Blood
-```
-
-Проверка каждого имени:
+A player is identified everywhere by its **full bus name**:
 
 ```text
-$ playerctl -p chromium.instance125864 status
-Playing
-$ playerctl -p chromium.instance125864 loop
-No player could handle this command
-$ playerctl -p chromium.instance125864 shuffle
-No player could handle this command
-$ playerctl -p chromium.instance125864 volume
-1.000000
+org.mpris.MediaPlayer2.chromium.instance123
+org.mpris.MediaPlayer2.firefox.instance456
 ```
 
-Без `-p`:
+Base names such as `chromium` and `firefox` are used only for display. Identity
+matching for `WAYBAR_PLAYER_PRIORITY` checks, in order:
 
-```text
-$ playerctl metadata --format '{{playerName}} {{status}} | {{title}}'
-chromium Playing | In the Field of Blood
+1. `DesktopEntry`
+2. `Identity`
+3. base bus name
 
-$ playerctl loop
-No player could handle this command
-```
+This distinguishes an Electron app (for example Yandex Music, desktop entry
+`yandex-music`, identity `YandexMusic`) from Chromium/Firefox when both expose
+a `chromium.instanceN`-style bus name.
 
-В этот момент Firefox-плеера не было, поэтому проверить маршрутизацию между
-двумя живыми плеерами не удалось. При одном плеере playerctl без `-p`
-обслуживает его.
+## Selection policy
 
-## Поведение playerctl без `-p`
+Shared by status, popup and ctl:
 
-`playerctl` без `-p` не знает о «текущем» или «выбранном» плеере. Для каждой
-команды он выбирает первый MPRIS-плеер, который **умеет эту команду**; это не
-обязательно играющий плеер и не обязательно тот, чей трек показан. Поэтому
-`metadata`, `loop`, `shuffle`, `volume` и управляющие команды могут уходить
-разным плеерам. Это и давало симптомы:
+1. If the current player is Playing, keep it while it plays.
+2. Otherwise Playing wins over Paused/Stopped.
+3. Among equals: `WAYBAR_PLAYER_PRIORITY`, then the sticky current player,
+   then the most recently active player.
+4. If nothing plays, keep the sticky player.
+5. If there is no usable player, status outputs the idle JSON and ctl exits 1.
 
-- пауза в YouTube/Firefox могла перехватывать управление у играющей музыки;
-- `loop` без `-p` уходил в Firefox, хотя карточка показывала Яндекс Музыку;
-- возврат к музыке происходил только после play в её сессии.
+State is stored in `$XDG_RUNTIME_DIR/waybar-player/selection.json` under
+`flock`, with atomic replacement.
 
-## Политика waybar-player
+## Diagnostics with gdbus
 
-Выбор общий для `waybar-player-status`, попапа и `waybar-player-ctl`:
-
-1. Если текущий выбранный плеер играет — остаёмся на нём, даже если играет
-   второй.
-2. Иначе Playing важнее Paused/Stopped.
-3. Среди равных кандидатов: `WAYBAR_PLAYER_PRIORITY` (подстроки имён через
-   запятую), затем липкий текущий плеер, затем самый недавно активный.
-4. Если не играет никто — остаётся липкий текущий плеер.
-5. Состояние хранится в `$XDG_RUNTIME_DIR/waybar-player/selection.json`
-   под `flock`; запись атомарная.
-
-Все запросы и команды к выбранному плееру выполняются с `-p <выбранный>`.
-Исключение — служебный `playerctl -a --follow` в статусном процессе, который
-нужен, чтобы видеть события всех плееров.
-
-## Firefox и обложка
-
-На момент проверки Firefox MPRIS-сеанса не публиковал:
-
-```text
-$ playerctl -p firefox metadata mpris:artUrl
-No players found
-```
-
-Поэтому причину заглушки обложки в Firefox сейчас подтвердить нельзя. Когда
-Firefox начнёт воспроизведение, проверьте:
+List MPRIS names:
 
 ```bash
-playerctl -l
-playerctl -p firefox metadata mpris:artUrl
+gdbus call --session \
+  --dest org.freedesktop.DBus \
+  --object-path /org/freedesktop/DBus \
+  --method org.freedesktop.DBus.ListNames
 ```
 
-Схема/путь должны попадать в разрешённые `file://`-каталоги; иначе это
-ограничение безопасности, а не регрессия выбора плеера.
-
-## Проверка выбора
+Read a property by full bus name:
 
 ```bash
-playerctl -l
-playerctl -a metadata --format '{{playerName}} {{status}} | {{title}}'
-playerctl -p <name> status
-playerctl -p <name> loop
-playerctl -p <name> shuffle
-playerctl -p <name> volume
+gdbus call --session \
+  --dest org.mpris.MediaPlayer2.chromium.instance123 \
+  --object-path /org/mpris/MediaPlayer2 \
+  --method org.freedesktop.DBus.Properties.Get \
+  org.mpris.MediaPlayer2.Player PlaybackStatus
 ```
 
-Сравните, какой игрок отвечает без `-p`, и какой выбран в
-`$XDG_RUNTIME_DIR/waybar-player/selection.json`.
+Read root identity:
+
+```bash
+gdbus call --session \
+  --dest org.mpris.MediaPlayer2.chromium.instance123 \
+  --object-path /org/mpris/MediaPlayer2 \
+  --method org.freedesktop.DBus.Properties.Get \
+  org.mpris.MediaPlayer2 Identity
+```
+
+Read metadata:
+
+```bash
+gdbus call --session \
+  --dest org.mpris.MediaPlayer2.chromium.instance123 \
+  --object-path /org/mpris/MediaPlayer2 \
+  --method org.freedesktop.DBus.Properties.Get \
+  org.mpris.MediaPlayer2.Player Metadata
+```
+
+Read the current selection:
+
+```bash
+cat "${XDG_RUNTIME_DIR:-/tmp}/waybar-player/selection.json"
+```
+
+## Firefox cover art
+
+Firefox should be checked while it has an active MPRIS session. Read
+`mpris:artUrl` with the Metadata command above. A `file://` URL is accepted only
+inside the documented whitelist (`/tmp`, `$XDG_RUNTIME_DIR`, the cache
+directory, and `WAYBAR_PLAYER_ART_DIRS`); outside paths are rejected by design.

@@ -28,21 +28,22 @@ English popup; the Russian popup is shown in the Russian section below.
   confirmed no-op falls back to the system sink via `wpctl` (or hides); the
   mark is cleared on track change. Paused/stopped playback stays native.
 - English and Russian UI, plus a JSON-based way to add more languages.
-- Status is refreshed on every player event and by a 1 s fallback poll;
-  each JSON line is flushed immediately to Waybar.
-- Explicit multi-player selection: Playing beats paused/stopped, the current
-  player stays sticky, and `WAYBAR_PLAYER_PRIORITY` breaks ties. playerctl
-  without `-p` can route a command to the first capable player; this project
-  never relies on that for selected-player actions.
+- Status is event-driven from MPRIS PropertiesChanged/NameOwnerChanged, with a
+  30 s safety resync; each JSON line is flushed immediately to Waybar.
+- Explicit multi-player selection over direct MPRIS D-Bus: players are
+  identified by full bus name; `WAYBAR_PLAYER_PRIORITY` matches DesktopEntry,
+  Identity, then the base bus name. Playing beats paused/stopped.
 - `waybar-player-ctl` sends next/previous/volume/shuffle/loop to the selected
-  player instead of relying on playerctl's implicit default.
+  full bus name.
+- The popup is resident: the first show reuses an already-created GTK window,
+  with text seeded from the status process.
 
 ## Requirements (Arch)
 
 Required:
 
 ```text
-bash waybar playerctl python python-gobject gtk3 gtk-layer-shell
+bash waybar python python-gobject gtk3 gtk-layer-shell
 gdk-pixbuf2 pango util-linux procps-ng coreutils
 ```
 
@@ -79,6 +80,7 @@ $PREFIX/bin/waybar-player-menu
 $PREFIX/bin/waybar-player-ctl
 $PREFIX/share/waybar-player/player-menu.py
 $PREFIX/share/waybar-player/players.py
+$PREFIX/share/waybar-player/mpris.py
 $PREFIX/share/waybar-player/i18n.py
 $PREFIX/share/waybar-player/locales/en.json
 $PREFIX/share/waybar-player/locales/ru.json
@@ -175,7 +177,7 @@ See [`examples/style.css`](examples/style.css).
 | `WAYBAR_PLAYER_ACCENT` | `cover` | `cover` samples the cover colour; `fixed` keeps `#ff8c00`. |
 | `WAYBAR_PLAYER_VOLUME_MODE` | `auto` | `auto`, `player`, `sink` or `hide`; controls volume handling explicitly. |
 | `WAYBAR_PLAYER_VOLUME_FALLBACK` | `sink` | Legacy alias for `auto`: `sink` uses `wpctl`; `hide` hides the slider. |
-| `WAYBAR_PLAYER_PRIORITY` | empty | Comma-separated name substrings; first match wins among non-sticky candidates. |
+| `WAYBAR_PLAYER_PRIORITY` | empty | Comma-separated substrings matched against DesktopEntry, Identity, then base bus name. |
 
 Language selection order: `WAYBAR_PLAYER_LANG`, `LC_ALL`, `LC_MESSAGES`,
 `LANG`. The first two letters are used (`ru_RU.UTF-8` → `ru`); unknown
@@ -207,7 +209,7 @@ To add a language:
 - Left click on the module: open/close the popup.
 - Middle click: previous track; right click: pause/play; wheel: volume.
 - Those actions call `waybar-player-ctl`, which targets the explicitly
-  selected player (never playerctl's implicit first-capable default).
+  selected full MPRIS bus name (direct Gio D-Bus).
 - In the popup: prev/play/next, shuffle and loop buttons when supported, volume
   icon opens the volume page, the bottom slider seeks, `✕`/`Esc` closes.
 - Loop cycles through `None → Track → Playlist`; shuffle toggles on/off. Players
@@ -235,11 +237,11 @@ To add a language:
 ## Tests
 
 ```bash
-python3 -m py_compile bin/waybar-player-status bin/waybar-player-ctl share/player-menu.py share/i18n.py share/players.py tests/*.py
+python3 -m py_compile bin/waybar-player-status bin/waybar-player-ctl bin/waybar-player-menu share/player-menu.py share/i18n.py share/players.py share/mpris.py tests/*.py
 python3 -m venv --system-site-packages .venv
 .venv/bin/pip install pytest
 .venv/bin/python -m pytest -q
-shellcheck bin/waybar-player-menu install.sh uninstall.sh
+shellcheck install.sh uninstall.sh
 ```
 
 `--system-site-packages` lets the tests use the system PyGObject. The tests do
@@ -256,6 +258,7 @@ share/
   player-menu.py         # GTK3 + gtk-layer-shell popup
   i18n.py                # JSON catalog loader and t()
   players.py             # shared player selection and sticky state
+  mpris.py               # async Gio D-Bus MPRIS client
 locales/
   en.json
   ru.json
@@ -339,9 +342,10 @@ PREFIX="$HOME/.local" ./install.sh
 Статус обновляется на каждое событие плеера и страховочным опросом раз в
 секунду; каждая JSON-строка сразу сбрасывается в pipe Waybar.
 Плеер выбирается явно: Playing важнее паузы, текущий остаётся липким,
-`WAYBAR_PLAYER_PRIORITY` задаёт приоритет. Клики/колесо вызывают
-`waybar-player-ctl`; все действия идут с `-p <выбранный>`. Без `-p`
-playerctl может отправить команду первому подходящему плееру.
+`WAYBAR_PLAYER_PRIORITY` задаёт приоритет (DesktopEntry → Identity → базовое
+имя шины). Клики/колесо вызывают `waybar-player-ctl`; все действия идут
+на полное имя шины выбранного плеера через Gio D-Bus. Попап резидентный:
+первый кадр использует уже созданное окно и состояние из статуса.
 Добавить язык: скопировать `locales/en.json` в `locales/xx.json`, перевести
 значения, сохранить ключи и `{плейсхолдеры}`, затем снова запустить
 `./install.sh` и задать `WAYBAR_PLAYER_LANG=xx`.

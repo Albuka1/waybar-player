@@ -17,7 +17,8 @@ for needed in \
     "$SCRIPT_DIR/bin/waybar-player-status" \
     "$SCRIPT_DIR/bin/waybar-player-menu" \
     "$SCRIPT_DIR/share/player-menu.py" \
-    "$SCRIPT_DIR/share/players.py"; do
+    "$SCRIPT_DIR/share/players.py" \
+    "$SCRIPT_DIR/share/mpris.py"; do
     if [[ ! -f $needed ]]; then
         printf 'Не найден файл: %s\n' "$needed" >&2
         exit 1
@@ -29,6 +30,7 @@ install -Dm755 "$SCRIPT_DIR/bin/waybar-player-menu" "$BIN_DIR/waybar-player-menu
 install -Dm755 "$SCRIPT_DIR/bin/waybar-player-ctl" "$BIN_DIR/waybar-player-ctl"
 install -Dm644 "$SCRIPT_DIR/share/player-menu.py" "$SHARE_DIR/player-menu.py"
 install -Dm644 "$SCRIPT_DIR/share/players.py" "$SHARE_DIR/players.py"
+install -Dm644 "$SCRIPT_DIR/share/mpris.py" "$SHARE_DIR/mpris.py"
 install -Dm644 "$SCRIPT_DIR/share/i18n.py" "$SHARE_DIR/i18n.py"
 for locale in "$SCRIPT_DIR"/locales/*.json; do
     install -Dm644 "$locale" "$SHARE_DIR/locales/$(basename -- "$locale")"
