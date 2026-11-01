@@ -46,9 +46,39 @@ def test_update_selection_persists_sticky_current(tmp_path, monkeypatch):
     monkeypatch.setattr(players, "STATE_FILE", runtime / "selection.json")
     monkeypatch.setattr(players, "LOCK_FILE", runtime / ".lock")
     statuses = {"A": "paused", "B": "stopped"}
-    monkeypatch.setattr(players, "list_players", lambda: ["A", "B"])
-    monkeypatch.setattr(players, "player_status", lambda name: statuses[name])
-
-    assert players.update_selection() == "A"
-    assert players.update_selection() == "A"
+    assert players.update_selection(["A", "B"], statuses) == "A"
+    assert players.update_selection(["A", "B"], statuses) == "A"
     assert players.STATE_FILE.is_file()
+
+
+def test_priority_matches_identity_before_base_name():
+    yandex = "org.mpris.MediaPlayer2.chromium.instance111"
+    chromium = "org.mpris.MediaPlayer2.chromium.instance222"
+    identities = {
+        yandex: {"desktop_entry": "yandex-music", "identity": "Yandex Music",
+                 "base": "chromium"},
+        chromium: {"desktop_entry": "chromium", "identity": "Chromium",
+                   "base": "chromium"},
+    }
+    statuses = {yandex: "playing", chromium: "playing"}
+    selected = players.select_player(
+        [yandex, chromium], statuses, current=None,
+        priority=["yandex"], identities=identities,
+    )
+    assert selected == yandex
+
+
+def test_base_name_is_derived_from_full_bus_name():
+    assert players.base_name("org.mpris.MediaPlayer2.chromium.instance123") == "chromium"
+    assert players.base_name("org.mpris.MediaPlayer2.firefox") == "firefox"
+
+
+def test_player_disappears_and_reappears(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    monkeypatch.setattr(players, "RUNTIME_DIR", runtime)
+    monkeypatch.setattr(players, "STATE_FILE", runtime / "selection.json")
+    monkeypatch.setattr(players, "LOCK_FILE", runtime / ".lock")
+    full = "org.mpris.MediaPlayer2.chromium.instance123"
+    assert players.update_selection([full], {full: "playing"}) == full
+    assert players.update_selection([], {}) is None
+    assert players.update_selection([full], {full: "paused"}) == full
