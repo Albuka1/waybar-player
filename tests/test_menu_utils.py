@@ -319,10 +319,12 @@ def test_popup_show_defers_slow_work(monkeypatch):
     popup.animate_open = lambda: False
     popup._after_show = lambda: False
     idle_calls = []
+    timers = []
     monkeypatch.setattr(menu.GLib, "idle_add", lambda cb: idle_calls.append(cb) or 1)
-    monkeypatch.setattr(menu.GLib, "timeout_add", lambda *_args: 1)
+    monkeypatch.setattr(menu.GLib, "timeout_add", lambda _ms, cb: timers.append(cb) or 1)
     monkeypatch.setattr(menu, "HAVE_LAYER", False)
     popup.show()
     assert popup.win.order == ["show_all"]
     assert idle_calls == [popup._after_show]
+    assert popup._refresh_tick in timers
     assert popup.visible is True

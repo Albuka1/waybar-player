@@ -634,7 +634,12 @@ class PlayerPopup:
         self.selected = None
         self.selected_player = None
         self.position = 0.0
-        self.manager = mpris.MprisManager(self._manager_changed)
+        self.position_time = time.monotonic()
+        self.position_sync_at = 0.0
+        self.position_supported = True
+        self.manager = mpris.MprisManager(
+            self._manager_changed, self._manager_seeked
+        )
         self.refresh_debounce = 0
         self.visible = False
         self.seed_loaded = False
@@ -893,11 +898,18 @@ class PlayerPopup:
         self._manager_changed()
 
     def _manager_changed(self):
-        if not self.alive:
+        if not self.alive or not self.visible:
             return
         if self.refresh_debounce:
             return
         self.refresh_debounce = GLib.timeout_add(50, self.refresh_once)
+
+    def _manager_seeked(self, player, position):
+        if not self.alive or not self.visible or player is not self.selected_player:
+            return
+        self.position = max(0.0, float(position))
+        self.position_time = time.monotonic()
+        self._display_position()
 
     def _control(self, label, tooltip, callback):
         btn = Gtk.Button(label=label)
@@ -965,6 +977,10 @@ class PlayerPopup:
         if not self.seed_loaded:
             self._load_seed()
             self.seed_loaded = True
+        self.position_time = time.monotonic()
+        self.position_sync_at = 0.0
+        self.seek_dragging = False
+        self.updating_seek = False
         self.anim_from = max(0, CARD_TOP_MARGIN - 10)
         self.card.set_opacity(0.30)
         if HAVE_LAYER:
@@ -979,7 +995,7 @@ class PlayerPopup:
         self.anim_id = GLib.timeout_add(16, self.animate_open)
         if self.refresh_id:
             GLib.source_remove(self.refresh_id)
-        self.refresh_id = GLib.timeout_add(1000, self.refresh_once)
+        self.refresh_id = GLib.timeout_add(1000, self._refresh_tick)
 
     def toggle(self):
         if self.visible:
@@ -1006,8 +1022,9 @@ class PlayerPopup:
         return True
 
     def _cancel_timers(self):
-        for attr in ("refresh_id", "vol_timeout", "volume_readback_id",
-                     "seek_timeout", "anim_id", "fade_id", "ws_timer"):
+        for attr in ("refresh_id", "refresh_debounce", "vol_timeout",
+                     "volume_readback_id", "seek_timeout", "anim_id", "fade_id",
+                     "ws_timer"):
             source = getattr(self, attr, 0)
             setattr(self, attr, 0)
             if source and GLib.MainContext.default().find_source_by_id(source) is not None:
@@ -1018,6 +1035,8 @@ class PlayerPopup:
             self.win.hide()
             self.visible = False
             self.workspace_id = None
+            self.seek_dragging = False
+            self.updating_seek = False
             self._cancel_timers()
             return
         self.win.destroy()
@@ -1086,6 +1105,7 @@ class PlayerPopup:
         self.alive = False
         for source in (
             self.refresh_id,
+            self.refresh_debounce,
             self.vol_timeout,
             self.volume_readback_id,
             self.seek_timeout,
@@ -1096,6 +1116,7 @@ class PlayerPopup:
             if source and GLib.MainContext.default().find_source_by_id(source) is not None:
                 GLib.source_remove(source)
         self.refresh_id = 0
+        self.refresh_debounce = 0
         self.vol_timeout = 0
         self.volume_readback_id = 0
         self.seek_timeout = 0
@@ -1365,6 +1386,7 @@ class PlayerPopup:
         return False
 
     def update_from_state(self, st):
+        old_status = self.state["status"] if self.state else None
         self.state = st
         new_player = st["player"] or "MPRIS"
         if new_player != self.player:
@@ -1415,7 +1437,11 @@ class PlayerPopup:
                 ).start()
 
         if track_changed:
+            self._reset_position()
             self.fade_in()
+        elif st["status"] != old_status:
+            self.position_time = time.monotonic()
+            self.position_sync_at = 0.0
 
         self._update_volume(st)
 
@@ -1425,7 +1451,7 @@ class PlayerPopup:
             self.updating_seek = True
             if length > 0:
                 self.seek.set_range(0, length)
-                self.seek.set_sensitive(True)
+                self.seek.set_sensitive(self.position_supported)
                 self.total_label.set_text(fmt_time(length))
             else:
                 self.seek.set_range(0, 1)
@@ -1446,23 +1472,74 @@ class PlayerPopup:
     def _state_from_player(self, player):
         return state_from_player(player, self.position)
 
-    def _position_ready(self, value, _error):
-        if not self.alive or self.seek_dragging or value is None:
+    def _reset_position(self):
+        self.position = 0.0
+        self.position_time = time.monotonic()
+        self.position_sync_at = 0.0
+        self.position_supported = True
+
+    def _display_position(self):
+        if not self.length or self.length <= 0 or self.seek_dragging:
+            return
+        shown = min(max(0.0, self.position), self.length)
+        self.updating_seek = True
+        self.seek.set_value(shown)
+        self.updating_seek = False
+        self.cur_label.set_text(fmt_time(shown))
+
+    def _position_ready(self, value, _error, player=None):
+        if not self.alive or not self.visible or self.seek_dragging:
+            return False
+        if player is not None and player is not self.selected_player:
+            return False
+        if value is None:
+            self.position_supported = False
+            self.seek.set_sensitive(False)
             return False
         try:
-            self.position = float(value) / 1_000_000.0
+            self.position = max(0.0, float(value) / 1_000_000.0)
+            self.position_supported = True
+            self.position_time = time.monotonic()
+            self.position_sync_at = self.position_time
+            if self.length and self.length > 0:
+                self.seek.set_sensitive(True)
         except (TypeError, ValueError):
             return False
-        if self.length and self.length > 0:
-            shown = min(self.position, self.length)
-            self.updating_seek = True
-            self.seek.set_value(shown)
-            self.updating_seek = False
-            self.cur_label.set_text(fmt_time(shown))
+        self._display_position()
         return False
 
+    def _resync_position(self):
+        player = self.selected_player
+        if player is None:
+            return
+        self.position_sync_at = time.monotonic()
+        player.get_position(
+            lambda value, error: self._position_ready(value, error, player)
+        )
+
+    def _advance_position(self):
+        now = time.monotonic()
+        if (self.state is not None and self.state["status"] == "playing"
+                and self.position_supported and not self.seek_dragging):
+            elapsed = max(0.0, now - self.position_time)
+            rate = self.selected_player.rate if self.selected_player is not None else 1.0
+            self.position += elapsed * (rate if rate else 1.0)
+            if self.length and self.length > 0:
+                self.position = min(self.position, self.length)
+            self._display_position()
+        self.position_time = now
+        if now - self.position_sync_at >= 5.0:
+            self._resync_position()
+
+    def _refresh_tick(self):
+        if not self.alive or not self.visible:
+            return False
+        self._advance_position()
+        self.refresh()
+        return True
+
     def refresh(self):
-        if not self.alive:
+        if not self.alive or not self.visible:
             return False
         by_name = self.manager.players
         names = list(by_name)
@@ -1484,7 +1561,8 @@ class PlayerPopup:
             return True
         state = self._state_from_player(player)
         self.update_from_state(state)
-        player.get_position(self._position_ready)
+        if self.position_sync_at == 0.0:
+            self._resync_position()
         return True
 
     def refresh_once(self):
