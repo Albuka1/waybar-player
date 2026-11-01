@@ -3,6 +3,7 @@ import os
 import queue
 import threading
 import time
+from pathlib import Path
 
 import i18n
 import pytest
@@ -102,20 +103,51 @@ def test_status_json_handles_special_characters():
     assert payload["tooltip"].startswith('A & B "quoted" <tag>')
 
 
+class FakeMprisPlayer:
+    base_name = "chromium"
+    status = "playing"
+    volume = 0.5
+    shuffle = False
+    loop = "track"
+    can_next = True
+    can_previous = True
+    can_pause = True
+    can_control = True
+
+    def title(self):
+        return "Title"
+
+    def artist(self):
+        return "Artist"
+
+    def album(self):
+        return "Album"
+
+    def art_url(self):
+        return "https://example/cover"
+
+    def track_id(self):
+        return "track-1"
+
+    def track_url(self):
+        return "https://example/track"
+
+    def length(self):
+        return 100.0
+
+
 def test_parse_metadata_line():
-    line = "\x1f".join(
-        ["Playing", "chromium", "Title", "Artist", "Album", "https://example/cover", "0.5"]
-    )
-    state = status.parse_metadata_line(line)
+    state = status.state_from_player(FakeMprisPlayer())
     assert state["status"] == "playing"
     assert state["player"] == "chromium"
     assert state["title"] == "Title"
-    assert state["volume"] == "0.5"
+    assert state["volume"] == "0.500000"
 
 
 def test_follow_format_requests_volume():
-    assert "{{volume}}" in status.FMT
-    assert "{{status}}" in status.FMT
+    assert status.volume_percent("0.500000") == 50
+    state = status.state_from_player(FakeMprisPlayer())
+    assert status.volume_percent(state["volume"]) == 50
 
 
 def test_volume_change_changes_percentage():
@@ -125,39 +157,14 @@ def test_volume_change_changes_percentage():
     assert high["percentage"] == 80
 
 
-def test_retry_delay_is_exponential_and_capped():
-    assert status.retry_delay(0) == 1.0
-    assert status.retry_delay(1) == 2.0
-    assert status.retry_delay(2) == 4.0
-    assert status.retry_delay(3) == 5.0
-    assert status.retry_delay(10) == 5.0
+def test_resync_interval_is_thirty_seconds():
+    assert status.RESYNC_MS == 30_000
+    assert status.DEBOUNCE_MS == 50
 
 
-def test_reader_loop_restarts_after_follow_exit(tmp_path, monkeypatch):
-    counter = tmp_path / "starts.txt"
-    fake = tmp_path / "playerctl"
-    fake.write_text(
-        "#!/bin/sh\nprintf 'x\\n' >> \"{}\"\nexit 1\n".format(counter),
-        encoding="utf-8",
-    )
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
-    monkeypatch.setattr(status, "RETRY_BASE", 0.01)
-
-    events = queue.Queue()
-    stop = threading.Event()
-    thread = threading.Thread(
-        target=status.reader_loop, args=(events, stop), daemon=True
-    )
-    thread.start()
-    time.sleep(0.12)
-    stop.set()
-    thread.join(timeout=1.0)
-
-    assert not thread.is_alive()
-    assert counter.exists()
-    assert len(counter.read_text(encoding="utf-8").splitlines()) >= 2
-    assert not events.empty()
+def test_status_does_not_use_playerctl():
+    source = Path(status.__file__).read_text(encoding="utf-8")
+    assert "playerctl" not in source
 
 
 def test_status_transition_playing_paused_playing():

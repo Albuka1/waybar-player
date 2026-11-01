@@ -1,23 +1,13 @@
 #!/usr/bin/env python3
 #
-# waybar-player-status — JSON-источник для Waybar custom/player.
-#
-# Один долгоживущий процесс:
-#   * отдельный поток читает `playerctl -a --follow metadata --format ...`;
-#   * главный цикл двигает кадры диска и бегущую строку по таймеру;
-#   * при отсутствии плеера playerctl перезапускается раз в секунду.
-#
-# Waybar читает stdout построчно, поэтому каждая строка — компактный JSON:
-# {"text":"...","tooltip":"...","class":"...","percentage":N}
+# waybar-player-status — JSON status for Waybar, driven by async MPRIS D-Bus.
+# No external player process. Output format is compatible with 0.3.1.
 
 import json
 import os
-import queue
 import re
 import signal
-import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -31,23 +21,21 @@ for _candidate in (
     if (_candidate / "i18n.py").is_file():
         sys.path.insert(0, str(_candidate))
         break
-from i18n import t  # noqa: E402
-import players  # noqa: E402
 
-SEP = "\x1f"
-FMT = SEP.join([
-    "{{status}}", "{{playerName}}", "{{title}}", "{{artist}}",
-    "{{album}}", "{{mpris:artUrl}}", "{{volume}}",
-])
+from gi.repository import GLib  # noqa: E402
+
+from i18n import t  # noqa: E402
+import mpris  # noqa: E402
+import players  # noqa: E402
 
 FRAMES = ("◐", "◓", "◑", "◒")
 ICON_PAUSE = "󰏤"
 ICON_IDLE = "󰎆"
 
-PLAY_DELAY = 0.2       # кадр диска и шаг бегущей строки (строка — раз в 2 тика)
-IDLE_DELAY = 1.0       # обновление на паузе/остановке/без плеера
-RETRY_BASE = 1.0       # первый перезапуск playerctl после выхода
-RETRY_MAX = 5.0        # максимальная задержка экспоненциального backoff
+PLAY_DELAY = 0.2
+IDLE_DELAY = 1.0
+DEBOUNCE_MS = 50
+RESYNC_MS = 30_000
 
 
 def env_int(name, default, minimum=1):
@@ -65,7 +53,7 @@ def clean_field(value):
     if not value:
         return ""
     return (value.replace("\n", " ").replace("\r", " ")
-            .replace("\t", " ").replace(SEP, " "))
+            .replace("\t", " ").replace("\x1f", " "))
 
 
 def status_ru(status):
@@ -83,13 +71,9 @@ def truncate_title(text, width):
 
 
 def marquee(text, offset, width):
-    """Окно шириной width, циклически сдвинутое на offset."""
     if len(text) <= width:
         return text
-    separator = "   •   "
-    loop = text + separator
-    if not loop:
-        return ""
+    loop = text + "   •   "
     start = offset % len(loop)
     out = loop[start:start + width]
     if len(out) < width:
@@ -98,44 +82,13 @@ def marquee(text, offset, width):
 
 
 def volume_percent(raw):
-    """Повторяет старую bash-логику: целые проценты, две цифры дроби."""
     if not raw:
         return None
-    match = re.fullmatch(r"([0-9]+)(?:\.([0-9]+))?", raw)
+    match = re.fullmatch(r"([0-9]+)(?:\.([0-9]+))?", str(raw))
     if not match:
         return None
     fraction = (match.group(2) or "") + "00"
     return int(match.group(1)) * 100 + int(fraction[:2])
-
-
-def parse_metadata_line(line):
-    if not line:
-        return None
-    line = line.rstrip("\n")
-    if not line:
-        return None
-    parts = line.split(SEP)
-    if len(parts) < 7:
-        parts += [""] * (7 - len(parts))
-    status, player, title, artist, album, art_url, volume = parts[:7]
-    return {
-        "status": status.strip().lower(),
-        "player": clean_field(player),
-        "title": clean_field(title),
-        "artist": clean_field(artist),
-        "album": clean_field(album),
-        "art_url": clean_field(art_url),
-        "volume": clean_field(volume),
-    }
-
-
-def get_state(player):
-    if not player:
-        return None
-    line = players.player_metadata(player, FMT)
-    if not line:
-        return None
-    return parse_metadata_line(line)
 
 
 def track_key(state):
@@ -146,8 +99,24 @@ def song_title(state):
     return state["title"] or state["artist"] or state["player"] or t("status.no_title")
 
 
+def state_from_player(player):
+    if player is None:
+        return None
+    volume = "" if player.volume is None else "{:.6f}".format(player.volume)
+    return {
+        "status": (player.status or "stopped").lower(),
+        "player": player.base_name,
+        "title": clean_field(player.title()),
+        "artist": clean_field(player.artist()),
+        "album": clean_field(player.album()),
+        "art_url": player.art_url(),
+        "volume": volume,
+        "track_id": player.track_id(),
+        "track_url": player.track_url(),
+    }
+
+
 def build_status(state, tick, offset, title_width=TITLE_WIDTH):
-    """Возвращает (text, tooltip, class, percentage|None)."""
     if state is None:
         return (
             ICON_IDLE,
@@ -205,76 +174,19 @@ def status_json(state, tick, offset, title_width=TITLE_WIDTH):
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-_current_proc = None
-
-
-def _stop(signum, frame):
-    del signum, frame
-    proc = _current_proc
-    if proc is not None and proc.poll() is None:
-        try:
-            proc.terminate()
-        except OSError:
-            pass
-    sys.exit(0)
-
-
-def retry_delay(attempt):
-    """1, 2, 4, 5, 5, ... секунд — без бесконечного спама процессов."""
-    return min(RETRY_MAX, RETRY_BASE * (2 ** attempt))
-
-
-def _wait_retry(delay, stop_event):
-    if stop_event is not None:
-        return stop_event.wait(delay)
-    time.sleep(delay)
-    return False
-
-
-def reader_loop(events, stop_event=None):
-    """Читает playerctl --follow и складывает состояния в очередь."""
-    global _current_proc
-    attempt = 0
-    while stop_event is None or not stop_event.is_set():
-        try:
-            proc = subprocess.Popen(
-                ["playerctl", "-a", "--follow", "metadata", "--format", FMT],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-            )
-        except OSError:
-            events.put(None)
-            delay = retry_delay(attempt)
-            attempt += 1
-            if _wait_retry(delay, stop_event):
-                break
-            continue
-
-        attempt = 0
-        _current_proc = proc
-        try:
-            for line in proc.stdout:
-                state = parse_metadata_line(line)
-                if state is not None:
-                    events.put(state)
-        except (OSError, ValueError):
-            pass
-        finally:
-            try:
-                proc.terminate()
-            except OSError:
-                pass
-            _current_proc = None
-
-        events.put(None)
-        delay = retry_delay(attempt)
-        attempt += 1
-        if _wait_retry(delay, stop_event):
-            break
+def write_seed(state):
+    if state is None:
+        return
+    path = players.RUNTIME_DIR / "state.json"
+    try:
+        players.RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(".state.{}.tmp".format(os.getpid()))
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(state, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.write("\n")
+        os.replace(temporary, path)
+    except OSError:
+        pass
 
 
 def main():
@@ -282,81 +194,85 @@ def main():
         sys.stdout.reconfigure(
             encoding="utf-8", errors="replace", line_buffering=True
         )
-    signal.signal(signal.SIGTERM, _stop)
-    signal.signal(signal.SIGINT, _stop)
 
-    events = queue.Queue()
-    threading.Thread(target=reader_loop, args=(events,), daemon=True).start()
+    loop = GLib.MainLoop()
+    state = {"text": None}
+    runtime = {
+        "selected": None,
+        "state": None,
+        "last_json": None,
+        "tick": 0,
+        "offset": 0,
+        "debounce_id": 0,
+    }
 
-    selected = players.update_selection()
-    state = get_state(selected) if selected else None
-    prev_key = track_key(state) if state else None
-    tick = 0
-    offset = 0
-    next_tick = time.monotonic() + 0.1
-    next_poll = time.monotonic() + 1.0
+    def schedule():
+        if runtime["debounce_id"]:
+            return
+        runtime["debounce_id"] = GLib.timeout_add(DEBOUNCE_MS, refresh)
 
-    while True:
-        now = time.monotonic()
-        timeout = max(0.0, min(next_tick, next_poll) - now)
-        changed = False
-        got_event = False
-        try:
-            events.get(timeout=timeout)
-        except queue.Empty:
-            pass
+    def render(force=False):
+        current = runtime["state"]
+        line = status_json(current, runtime["tick"], runtime["offset"])
+        if force or line != runtime["last_json"]:
+            runtime["last_json"] = line
+            print(line, flush=True)
+
+    def refresh():
+        runtime["debounce_id"] = 0
+        by_name = manager.players
+        names = list(by_name)
+        statuses = {name: by_name[name].status for name in names}
+        identities = {
+            name: {
+                "desktop_entry": by_name[name].desktop_entry,
+                "identity": by_name[name].identity,
+                "base": by_name[name].base_name,
+            }
+            for name in names
+        }
+        selected = players.update_selection(names, statuses, identities)
+        runtime["selected"] = selected
+        current = state_from_player(by_name.get(selected)) if selected else None
+        if current != runtime["state"]:
+            if runtime["state"] is None or current is None:
+                runtime["offset"] = 0
+            elif track_key(current) != track_key(runtime["state"]):
+                runtime["offset"] = 0
+            runtime["state"] = current
+            write_seed(current)
+        render()
+        return False
+
+    def frame_tick():
+        current = runtime["state"]
+        if current is not None and current["status"] == "playing":
+            runtime["tick"] += 1
+            if runtime["tick"] % 2 == 0:
+                runtime["offset"] += 1
+            render()
         else:
-            got_event = True
-            while True:
-                try:
-                    events.get_nowait()
-                except queue.Empty:
-                    break
+            runtime["offset"] = 0
+        return True
 
-        # Any follow event (status or metadata) re-reads the selected player.
-        if got_event:
-            new_selected = players.update_selection()
-            selected = new_selected
-            new_state = get_state(selected) if selected else None
-            if new_state != state:
-                state = new_state
-                prev_key = track_key(state) if state else None
-                offset = 0
-                changed = True
+    def resync():
+        manager.refresh_all(schedule)
+        return True
 
-        # Safety net: poll all statuses once a second, query only on a change.
-        now = time.monotonic()
-        if now >= next_poll:
-            new_selected = players.update_selection()
-            status = players.player_status(new_selected) if new_selected else None
-            current_status = state["status"] if state else None
-            if (new_selected != selected or new_selected is None
-                    or state is None or status != current_status):
-                selected = new_selected
-                new_state = get_state(selected) if selected else None
-                if new_state != state:
-                    state = new_state
-                    prev_key = track_key(state) if state else None
-                    offset = 0
-                    changed = True
-            next_poll = now + 1.0
+    def stop(_signum=None, _frame=None):
+        loop.quit()
+        return False
 
-        due = now >= next_tick
-        if state is None or state["status"] != "playing":
-            offset = 0
-        if changed or due:
-            print(status_json(state, tick, offset), flush=True)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
 
-        if due:
-            if state is not None and state["status"] == "playing":
-                tick += 1
-                if tick % 2 == 0:
-                    offset += 1
-                next_tick = now + PLAY_DELAY
-            else:
-                offset = 0
-                next_tick = now + IDLE_DELAY
+    manager = mpris.MprisManager(schedule)
+    manager.start(schedule)
+    GLib.timeout_add(int(PLAY_DELAY * 1000), frame_tick)
+    GLib.timeout_add(RESYNC_MS, resync)
+    loop.run()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

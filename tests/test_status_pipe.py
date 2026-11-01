@@ -1,12 +1,20 @@
 import json
 import os
 import selectors
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
+import pytest
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = ROOT / "bin" / "waybar-player-status"
+FAKE = ROOT / "tests" / "fake_mpris_service.py"
 
 
 def _read_until(proc, predicate, timeout=3.0):
@@ -28,89 +36,96 @@ def _read_until(proc, predicate, timeout=3.0):
                 return payload
     finally:
         selector.close()
-    raise AssertionError("status line did not arrive: {}".format(predicate))
+    raise AssertionError("status line did not arrive")
 
 
-def _fake_playerctl(tmp_path):
-    path = tmp_path / "playerctl"
-    path.write_text(
-        '''#!/usr/bin/env python3
-import os
-import sys
-import time
-
-state_path = os.environ["FAKE_PLAYER_STATE"]
-
-
-def state():
-    with open(state_path, encoding="utf-8") as handle:
-        return handle.read().strip() or "Playing"
-
-
-args = sys.argv[1:]
-if args == ["-l"]:
-    print("fakeplayer")
-    sys.exit(0)
-if args[:1] == ["-p"]:
-    command = args[2] if len(args) > 2 else ""
-    current = state()
-    if command == "status":
-        print(current)
-        sys.exit(0)
-    if command == "metadata":
-        print("\\x1f".join([current, "fakeplayer", "Title", "Artist", "Album", "", "0.5"]))
-        sys.exit(0)
-    sys.exit(1)
-if args[:2] == ["-a", "--follow"]:
-    while True:
-        time.sleep(0.2)
-sys.exit(1)
-''',
-        encoding="utf-8",
+def _start_private_bus():
+    if shutil.which("dbus-daemon") is None:
+        pytest.skip("dbus-daemon is missing")
+    proc = subprocess.Popen(
+        ["dbus-daemon", "--session", "--fork", "--print-address=1", "--print-pid=1"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    path.chmod(0o755)
-    return path
+    address = proc.stdout.readline().strip()
+    pid_text = proc.stdout.readline().strip()
+    proc.wait(timeout=5)
+    if not address or not pid_text:
+        raise RuntimeError("dbus-daemon did not report address/pid")
+    return address, int(pid_text)
+
+
+def _wait_for_name(address, name, timeout=3.0):
+    bus = Gio.DBusConnection.new_for_address_sync(
+        address, Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None
+    )
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            reply = bus.call_sync(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                "org.freedesktop.DBus", "NameHasOwner",
+                GLib.Variant("(s)", (name,)), GLib.VariantType.new("(b)"),
+                Gio.DBusCallFlags.NONE, 200, None,
+            )
+            if reply.unpack()[0]:
+                return
+        except GLib.Error:
+            pass
+        time.sleep(0.05)
+    raise AssertionError("fake MPRIS name did not appear")
 
 
 def test_stdout_pipe_reports_pause_within_one_second(tmp_path):
-    fake = _fake_playerctl(tmp_path)
+    address, bus_pid = _start_private_bus()
     state_file = tmp_path / "state"
     state_file.write_text("Playing\n", encoding="utf-8")
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-
     env = os.environ.copy()
-    env["PATH"] = str(tmp_path) + os.pathsep + env.get("PATH", "")
-    env["FAKE_PLAYER_STATE"] = str(state_file)
+    env["DBUS_SESSION_BUS_ADDRESS"] = address
+    env["FAKE_MPRIS_STATE"] = str(state_file)
     env["XDG_RUNTIME_DIR"] = str(runtime)
     env["WAYBAR_PLAYER_LANG"] = "en"
 
-    proc = subprocess.Popen(
-        [str(STATUS)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        env=env,
+    fake = subprocess.Popen(
+        ["python3", str(FAKE)], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
+    status = None
     try:
-        playing = _read_until(proc, lambda p: p.get("class") == "playing")
+        _wait_for_name(address, "org.mpris.MediaPlayer2.fake")
+        status = subprocess.Popen(
+            [str(STATUS)], env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, bufsize=1,
+        )
+        playing = _read_until(status, lambda p: p.get("class") == "playing")
         assert playing["text"]
 
         started = time.monotonic()
         state_file.write_text("Paused\n", encoding="utf-8")
-        paused = _read_until(proc, lambda p: p.get("class") == "paused", timeout=2.5)
+        paused = _read_until(status, lambda p: p.get("class") == "paused", timeout=2.5)
         elapsed = time.monotonic() - started
         assert paused["text"].startswith("󰏤")
         assert elapsed < 2.5
 
         state_file.write_text("Playing\n", encoding="utf-8")
-        resumed = _read_until(proc, lambda p: p.get("class") == "playing", timeout=2.5)
+        resumed = _read_until(status, lambda p: p.get("class") == "playing", timeout=2.5)
         assert resumed["text"]
     finally:
-        proc.terminate()
+        if status is not None:
+            status.terminate()
+            try:
+                status.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                status.kill()
+                status.wait(timeout=3)
+        fake.terminate()
         try:
-            proc.wait(timeout=3)
+            fake.wait(timeout=3)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=3)
+            fake.kill()
+            fake.wait(timeout=3)
+        try:
+            os.kill(bus_pid, 15)
+        except OSError:
+            pass
